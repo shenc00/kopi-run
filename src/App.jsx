@@ -1,0 +1,439 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Routes, Route, useNavigate, useParams, Link } from "react-router-dom";
+import { supabase } from "./supabaseClient.js";
+import { BASES, MILK, SUGAR, STRENGTH, TEMP, defaultSel, buildName, genCode } from "./menu.js";
+
+/* ============================ Kopitiam palette ============================ */
+const C = {
+  cream: "#F0E2C6", paper: "#FBF5E7", paperDeep: "#F5ECD6", ink: "#2C1A0E",
+  coffee: "#4A2A18", coffeeMid: "#7A4A2E", green: "#1E6B4F", greenDark: "#114a36",
+  red: "#B23A2E", orange: "#D9772E", gold: "#C99A3E", line: "rgba(44,26,14,0.14)",
+};
+
+/* ============================ Toast hook ============================ */
+function useToast() {
+  const [toast, setToast] = useState("");
+  const t = useRef(null);
+  const flash = useCallback((msg) => {
+    setToast(msg);
+    clearTimeout(t.current);
+    t.current = setTimeout(() => setToast(""), 1800);
+  }, []);
+  return [toast, flash];
+}
+
+/* ============================ Local organizer token ============================ */
+const orgKey = (code) => `kopirun:org:${code}`;
+const saveOrgToken = (code, token) => {
+  try { localStorage.setItem(orgKey(code), token); } catch {}
+};
+const getOrgToken = (code) => {
+  try { return localStorage.getItem(orgKey(code)); } catch { return null; }
+};
+
+/* ============================ App / Router ============================ */
+export default function App() {
+  return (
+    <div style={pageStyle}>
+      <style>{css}</style>
+      <div style={{ width: "100%", maxWidth: 480, margin: "0 auto", padding: "0 18px 60px" }}>
+        <Brand />
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/order/:code" element={<OrderPage />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+        <footer style={{ textAlign: "center", marginTop: 22, font: "500 11px/1.5 'DM Sans'", color: C.coffeeMid }}>
+          Share the order link with your kaki — everyone sees the same live order.
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ Home ============================ */
+function Home() {
+  const navigate = useNavigate();
+  const [newName, setNewName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleCreate() {
+    setErr("");
+    if (!newName.trim()) return setErr("Give your kopi run a name first.");
+    setBusy(true);
+    try {
+      const code = genCode();
+      const token = crypto.randomUUID();
+      const { error } = await supabase
+        .from("orders")
+        .insert({ code, name: newName.trim(), organizer_token: token });
+      if (error) throw error;
+      saveOrgToken(code, token);
+      navigate(`/order/${code}`);
+    } catch (e) {
+      setErr("Couldn't create the order. Check your Supabase setup and try again.");
+      console.error(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleJoin() {
+    setErr("");
+    const code = joinCode.trim().toUpperCase();
+    if (code.length < 4) return setErr("Enter the full order code.");
+    setBusy(true);
+    try {
+      const { data, error } = await supabase
+        .from("orders").select("code").eq("code", code).maybeSingle();
+      if (error) throw error;
+      if (!data) setErr("No order found for that code.");
+      else navigate(`/order/${code}`);
+    } catch (e) {
+      setErr("Couldn't join. Try again.");
+      console.error(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div style={cardStyle}>
+        <SectionTitle>Start a run</SectionTitle>
+        <p style={subText}>Create an order, then share the link with everyone joining the dabao.</p>
+        <input className="kr-input" placeholder='e.g. "Monday morning kopi"'
+          value={newName} onChange={(e) => setNewName(e.target.value)} />
+        <button className="kr-add" onClick={handleCreate} disabled={busy}>
+          {busy ? "Creating…" : "Create order"}
+        </button>
+      </div>
+
+      <div style={cardStyle}>
+        <SectionTitle>Join a run</SectionTitle>
+        <p style={subText}>Got a code from a friend? Punch it in.</p>
+        <input className="kr-input" placeholder="Order code"
+          value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+          style={{ letterSpacing: ".24em", fontWeight: 700, textTransform: "uppercase" }} />
+        <button className="kr-add" style={{ background: C.green }} onClick={handleJoin} disabled={busy}>
+          {busy ? "Joining…" : "Join order"}
+        </button>
+      </div>
+
+      {err && <div style={errStyle}>{err}</div>}
+    </>
+  );
+}
+
+/* ============================ Order page ============================ */
+function OrderPage() {
+  const { code: rawCode } = useParams();
+  const code = (rawCode || "").toUpperCase();
+  const navigate = useNavigate();
+  const [toast, flash] = useToast();
+
+  const [order, setOrder] = useState(null);
+  const [items, setItems] = useState([]);
+  const [status, setStatus] = useState("loading"); // loading | ready | notfound
+  const [myName, setMyName] = useState("");
+  const [baseId, setBaseId] = useState("kopi");
+  const [sel, setSel] = useState(defaultSel());
+  const [notes, setNotes] = useState("");
+
+  const base = BASES.find((b) => b.id === baseId);
+  const isOrganizer = !!getOrgToken(code);
+
+  const fetchItems = useCallback(async (orderId) => {
+    const { data } = await supabase
+      .from("items").select("*").eq("order_id", orderId).order("created_at", { ascending: true });
+    setItems(data || []);
+  }, []);
+
+  // Load order + items, then subscribe to realtime changes
+  useEffect(() => {
+    let channel;
+    (async () => {
+      setStatus("loading");
+      const { data: ord, error } = await supabase
+        .from("orders").select("id, code, name, closed, created_at").eq("code", code).maybeSingle();
+      if (error || !ord) { setStatus("notfound"); return; }
+      setOrder(ord);
+      setStatus("ready");
+      await fetchItems(ord.id);
+
+      channel = supabase
+        .channel(`order-${ord.id}`)
+        .on("postgres_changes",
+          { event: "*", schema: "public", table: "items", filter: `order_id=eq.${ord.id}` },
+          () => fetchItems(ord.id))
+        .on("postgres_changes",
+          { event: "UPDATE", schema: "public", table: "orders", filter: `id=eq.${ord.id}` },
+          (payload) => setOrder((o) => ({ ...o, ...payload.new })))
+        .subscribe();
+    })();
+    return () => { if (channel) supabase.removeChannel(channel); };
+  }, [code, fetchItems]);
+
+  async function handleAdd() {
+    if (!myName.trim()) return flash("Enter your name first");
+    if (!order || order.closed) return;
+    const drink = buildName(base, sel);
+    const row = { order_id: order.id, person: myName.trim(), drink, notes: notes.trim() };
+    const { error } = await supabase.from("items").insert(row);
+    if (error) { flash("Couldn't add — try again"); console.error(error); return; }
+    setNotes("");
+    flash(`${drink} added`);
+    fetchItems(order.id);
+  }
+
+  async function handleClose() {
+    const token = getOrgToken(code);
+    if (!token || !order) return;
+    const { error } = await supabase.rpc("close_order", { p_code: code, p_token: token });
+    if (error) { flash("Couldn't close — try again"); console.error(error); return; }
+    setOrder((o) => ({ ...o, closed: true }));
+    flash("Order closed");
+  }
+
+  function copy(text, label) {
+    try { navigator.clipboard.writeText(text); flash(label || "Copied"); }
+    catch { flash("Copy not available"); }
+  }
+
+  if (status === "loading") return <div style={{ ...cardStyle, textAlign: "center", color: C.coffeeMid }}>Loading order…</div>;
+  if (status === "notfound") return <NotFound />;
+
+  const shareLink = `${window.location.origin}/order/${code}`;
+  const tally = {};
+  items.forEach((it) => {
+    const key = it.drink + (it.notes ? ` (${it.notes})` : "");
+    tally[key] = (tally[key] || 0) + 1;
+  });
+  const grouped = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <>
+      {/* header */}
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ font: "800 22px/1.1 'Fraunces'", color: C.ink, wordBreak: "break-word" }}>{order.name}</div>
+            <div style={{ font: "500 12px/1 'DM Sans'", color: C.coffeeMid, marginTop: 6 }}>
+              {order.closed ? "Closed · final order below" : `${items.length} drink${items.length === 1 ? "" : "s"} · live`}
+            </div>
+          </div>
+          <button className="kr-ghost" onClick={() => navigate("/")}>Home</button>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+          <div style={codeChip}>
+            <span style={{ font: "600 9px/1 'DM Sans'", letterSpacing: ".2em", color: C.coffeeMid }}>CODE</span>
+            <span style={{ font: "800 19px/1 'Fraunces'", letterSpacing: ".18em", color: C.coffee }}>{order.code}</span>
+          </div>
+          <button className="kr-solid" style={{ background: C.green }} onClick={() => copy(shareLink, "Link copied")}>
+            Copy link
+          </button>
+          <button className="kr-solid" style={{ background: C.coffee }} onClick={() => copy(order.code, "Code copied")}>
+            Copy code
+          </button>
+        </div>
+
+        {isOrganizer && !order.closed && (
+          <button className="kr-close" onClick={handleClose}>Close order</button>
+        )}
+      </div>
+
+      {/* builder */}
+      {!order.closed ? (
+        <div style={cardStyle}>
+          <SectionTitle>Build your drink</SectionTitle>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 16 }}>
+            {BASES.map((b) => (
+              <Pill key={b.id} on={b.id === baseId} accent={C.red}
+                onClick={() => { setBaseId(b.id); setSel(defaultSel()); }}>{b.name}</Pill>
+            ))}
+          </div>
+
+          {base.mods.includes("milk") && (
+            <ModRow label="Milk" options={MILK} value={sel.milk}
+              onPick={(o) => setSel((s) => ({ ...s, milk: o }))} />)}
+          {base.mods.includes("strength") && (
+            <ModRow label="Strength" options={STRENGTH} value={sel.strength}
+              onPick={(o) => setSel((s) => ({ ...s, strength: o }))} />)}
+          {base.mods.includes("sugar") && (
+            <ModRow label="Sweetness" options={SUGAR} value={sel.sugar}
+              onPick={(o) => setSel((s) => ({ ...s, sugar: o }))} />)}
+          {base.mods.includes("tarik") && (
+            <ModRow label="Pulled" options={[{ id: "no", label: "No" }, { id: "yes", label: "Tarik" }]}
+              value={{ id: sel.tarik ? "yes" : "no" }}
+              onPick={(o) => setSel((s) => ({ ...s, tarik: o.id === "yes" }))} />)}
+          {base.mods.includes("dino") && (
+            <ModRow label="Extra Milo on top" options={[{ id: "no", label: "No" }, { id: "yes", label: "Dinosaur" }]}
+              value={{ id: sel.dino ? "yes" : "no" }}
+              onPick={(o) => setSel((s) => ({ ...s, dino: o.id === "yes" }))} />)}
+          {base.mods.includes("temp") && (
+            <ModRow label="Temperature" options={TEMP} value={sel.temp}
+              onPick={(o) => setSel((s) => ({ ...s, temp: o }))} />)}
+
+          <div style={previewStyle}>
+            <span style={{ font: "500 11px/1 'DM Sans'", color: C.coffeeMid, letterSpacing: ".1em" }}>YOUR ORDER</span>
+            <span style={{ font: "700 italic 20px/1.1 'Fraunces'", color: C.coffee }}>{buildName(base, sel)}</span>
+          </div>
+
+          <input className="kr-input" placeholder="Notes (optional) — e.g. less ice"
+            value={notes} onChange={(e) => setNotes(e.target.value)} style={{ marginTop: 12 }} />
+          <input className="kr-input" placeholder="Your name"
+            value={myName} onChange={(e) => setMyName(e.target.value)} style={{ marginTop: 10 }} />
+          <button className="kr-add" onClick={handleAdd}>Add to the order</button>
+        </div>
+      ) : (
+        <div style={{ ...cardStyle, textAlign: "center", borderColor: C.red }}>
+          <div style={{ font: "800 18px/1.2 'Fraunces'", color: C.red }}>This order is closed</div>
+          <div style={{ font: "500 13px/1.4 'DM Sans'", color: C.coffeeMid, marginTop: 6 }}>
+            The organizer has locked it in. Final list below.
+          </div>
+        </div>
+      )}
+
+      {/* consolidated */}
+      <div style={cardStyle}>
+        <SectionTitle>The order so far</SectionTitle>
+        {grouped.length === 0 ? (
+          <div style={{ font: "500 14px/1.5 'DM Sans'", color: C.coffeeMid, padding: "6px 0" }}>
+            Nothing yet — be the first to add a drink.
+          </div>
+        ) : (
+          <>
+            <div style={{ marginBottom: 14 }}>
+              {grouped.map(([name, n]) => (
+                <div key={name} style={tallyRow}>
+                  <span style={{ font: "800 16px/1.2 'Fraunces'", color: C.green, minWidth: 34 }}>{n}×</span>
+                  <span style={{ font: "600 15px/1.3 'DM Sans'", color: C.ink }}>{name}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ height: 1, background: C.line, margin: "4px 0 12px" }} />
+            <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
+              Who ordered what
+            </div>
+            {items.map((it) => (
+              <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 0", borderBottom: `1px dotted ${C.line}` }}>
+                <span style={{ font: "600 13px/1.3 'DM Sans'", color: C.coffee }}>{it.person}</span>
+                <span style={{ font: "500 13px/1.3 'DM Sans'", color: C.ink, textAlign: "right" }}>
+                  {it.drink}{it.notes ? <em style={{ color: C.coffeeMid }}> · {it.notes}</em> : null}
+                </span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+
+      {toast && <div style={toastStyle}>{toast}</div>}
+    </>
+  );
+}
+
+function NotFound() {
+  return (
+    <div style={{ ...cardStyle, textAlign: "center" }}>
+      <div style={{ font: "800 18px/1.2 'Fraunces'", color: C.red }}>Order not found</div>
+      <p style={subText}>That code doesn't match any order.</p>
+      <Link to="/" style={{ color: C.green, font: "700 14px/1 'DM Sans'", textDecoration: "none" }}>← Back home</Link>
+    </div>
+  );
+}
+
+/* ============================ UI atoms ============================ */
+function Pill({ on, onClick, children, accent = C.green }) {
+  return (
+    <button onClick={onClick} className="kr-pill"
+      style={{ background: on ? accent : "transparent", color: on ? "#fff" : C.coffee,
+               borderColor: on ? accent : C.line, fontWeight: on ? 700 : 500 }}>
+      {children}
+    </button>
+  );
+}
+
+function ModRow({ label, options, value, onPick }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>{label}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+        {options.map((o) => (
+          <Pill key={o.id} on={value.id === o.id} onClick={() => onPick(o)}>{o.label}</Pill>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SectionTitle({ children }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+      <span style={{ width: 7, height: 7, borderRadius: 9, background: C.red, display: "inline-block" }} />
+      <h2 style={{ font: "800 17px/1 'Fraunces'", color: C.ink, margin: 0 }}>{children}</h2>
+    </div>
+  );
+}
+
+function Brand() {
+  return (
+    <header style={{ textAlign: "center", paddingTop: 30, paddingBottom: 8 }}>
+      <Link to="/" style={{ display: "inline-flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
+        <svg width="42" height="42" viewBox="0 0 42 42" fill="none" aria-hidden>
+          <path d="M9 14h21v9a9 9 0 0 1-9 9h-3a9 9 0 0 1-9-9v-9z" fill={C.green} />
+          <path d="M30 16h3a4 4 0 0 1 0 8h-3" stroke={C.coffee} strokeWidth="2.4" fill="none" />
+          <path d="M14 4c-1.6 2 1.6 3 0 5M21 4c-1.6 2 1.6 3 0 5M28 4c-1.6 2 1.6 3 0 5" stroke={C.coffeeMid} strokeWidth="2" strokeLinecap="round" />
+          <rect x="9" y="14" width="21" height="3.4" fill="#fff" opacity=".85" />
+        </svg>
+        <div style={{ textAlign: "left" }}>
+          <div style={{ font: "900 30px/0.9 'Fraunces'", color: C.coffee, letterSpacing: "-.01em" }}>Kopi Run</div>
+          <div style={{ font: "600 10px/1 'DM Sans'", letterSpacing: ".28em", textTransform: "uppercase", color: C.green, marginTop: 5 }}>
+            Dabao for the whole gang
+          </div>
+        </div>
+      </Link>
+    </header>
+  );
+}
+
+/* ============================ Styles ============================ */
+const pageStyle = {
+  minHeight: "100vh", fontFamily: "'DM Sans', system-ui, sans-serif", color: C.ink,
+  background:
+    `radial-gradient(circle at 12% 8%, rgba(30,107,79,0.10), transparent 38%),` +
+    `radial-gradient(circle at 88% 4%, rgba(178,58,46,0.10), transparent 34%),` +
+    `radial-gradient(${C.line} 1px, transparent 1px)`,
+  backgroundColor: C.cream, backgroundSize: "auto, auto, 22px 22px",
+};
+const cardStyle = { background: C.paper, border: `1px solid ${C.line}`, borderRadius: 18, padding: 18, marginTop: 16, boxShadow: "0 10px 26px -18px rgba(44,26,14,0.55)" };
+const codeChip = { display: "inline-flex", flexDirection: "column", gap: 3, padding: "8px 14px", borderRadius: 12, background: C.paperDeep, border: `1px dashed ${C.gold}` };
+const previewStyle = { marginTop: 6, padding: "14px 16px", borderRadius: 14, background: `linear-gradient(135deg, ${C.paperDeep}, #fff)`, border: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 4 };
+const tallyRow = { display: "flex", alignItems: "baseline", gap: 10, padding: "5px 0" };
+const subText = { font: "500 13px/1.5 'DM Sans'", color: C.coffeeMid, margin: "0 0 12px" };
+const errStyle = { marginTop: 14, padding: "10px 14px", borderRadius: 12, background: "#fbe3df", color: C.red, font: "600 13px/1.4 'DM Sans'", textAlign: "center" };
+const toastStyle = { position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", background: C.ink, color: C.paper, padding: "11px 20px", borderRadius: 100, font: "600 13px/1 'DM Sans'", boxShadow: "0 10px 30px -8px rgba(0,0,0,.5)", zIndex: 50, animation: "krpop .25s ease" };
+
+const css = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,700;0,9..144,900;1,9..144,600;1,9..144,700&family=DM+Sans:wght@400;500;600;700&display=swap');
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { margin: 0; }
+.kr-pill { padding: 8px 13px; border-radius: 100px; border: 1.5px solid; font-family: 'DM Sans'; font-size: 13px; cursor: pointer; transition: all .15s ease; }
+.kr-pill:hover { transform: translateY(-1px); }
+.kr-input { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1.5px solid ${C.line}; background: #fff; font-family: 'DM Sans'; font-size: 15px; color: ${C.ink}; outline: none; transition: border-color .15s; }
+.kr-input:focus { border-color: ${C.green}; }
+.kr-add { width: 100%; margin-top: 14px; padding: 13px; border: none; border-radius: 12px; background: ${C.red}; color: #fff; font-family: 'Fraunces'; font-weight: 700; font-size: 16px; cursor: pointer; transition: transform .12s, filter .15s; }
+.kr-add:hover { filter: brightness(1.06); }
+.kr-add:active { transform: scale(.985); }
+.kr-add:disabled { opacity: .6; cursor: default; }
+.kr-solid { padding: 9px 13px; border: none; border-radius: 10px; color: #fff; font-family: 'DM Sans'; font-weight: 600; font-size: 12.5px; cursor: pointer; transition: filter .15s; }
+.kr-solid:hover { filter: brightness(1.08); }
+.kr-ghost { padding: 7px 12px; border: 1.5px solid ${C.line}; border-radius: 100px; background: transparent; color: ${C.coffeeMid}; font-family: 'DM Sans'; font-weight: 600; font-size: 12px; cursor: pointer; }
+.kr-ghost:hover { border-color: ${C.coffeeMid}; }
+.kr-close { width: 100%; margin-top: 14px; padding: 11px; border: 1.5px solid ${C.red}; border-radius: 12px; background: transparent; color: ${C.red}; font-family: 'DM Sans'; font-weight: 700; font-size: 14px; cursor: pointer; transition: all .15s; }
+.kr-close:hover { background: ${C.red}; color: #fff; }
+a { color: inherit; }
+@keyframes krpop { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+`;

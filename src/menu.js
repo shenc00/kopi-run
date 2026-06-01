@@ -23,11 +23,7 @@ export const TEMP = [
 
 export const BASES = [
   { id: "kopi", name: "Kopi", desc: "Nanyang coffee", mods: ["milk", "strength", "sugar", "temp"] },
-  { id: "teh", name: "Teh", desc: "Tea", mods: ["milk", "strength", "sugar", "tarik", "temp"] },
-  { id: "yuanyang", name: "Yuan Yang", desc: "Kopi + Teh", mods: ["milk", "sugar", "temp"] },
-  { id: "milo", name: "Milo", desc: "Malted chocolate", mods: ["dino", "temp"] },
-  { id: "bandung", name: "Bandung", desc: "Rose syrup milk", mods: ["temp"] },
-  { id: "horlicks", name: "Horlicks", desc: "Malted drink", mods: ["temp"] },
+  { id: "teh", name: "Teh", desc: "Tea", mods: ["milk", "strength", "sugar", "temp"] },
   { id: "oolong", name: "Oolong", desc: "Oolong tea", mods: ["temp"] },
   { id: "water", name: "Water", desc: "Plain water", mods: ["temp"] },
   { id: "others", name: "Others", desc: "Type your own", mods: ["custom"] },

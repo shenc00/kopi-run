@@ -28,6 +28,9 @@ export const BASES = [
   { id: "milo", name: "Milo", desc: "Malted chocolate", mods: ["dino", "temp"] },
   { id: "bandung", name: "Bandung", desc: "Rose syrup milk", mods: ["temp"] },
   { id: "horlicks", name: "Horlicks", desc: "Malted drink", mods: ["temp"] },
+  { id: "oolong", name: "Oolong", desc: "Oolong tea", mods: ["temp"] },
+  { id: "water", name: "Water", desc: "Plain water", mods: ["temp"] },
+  { id: "others", name: "Others", desc: "Type your own", mods: ["custom"] },
 ];
 
 export function defaultSel() {
@@ -38,10 +41,14 @@ export function defaultSel() {
     temp: TEMP[0],
     tarik: false,
     dino: false,
+    custom: "",
   };
 }
 
 export function buildName(base, sel) {
+  if (base.mods.includes("custom")) {
+    return (sel.custom || "").trim() || "Others";
+  }
   const p = [base.name];
   if (base.mods.includes("milk") && sel.milk.token) p.push(sel.milk.token);
   if (base.mods.includes("strength") && sel.strength.token) p.push(sel.strength.token);

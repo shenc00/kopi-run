@@ -179,6 +179,7 @@ function OrderPage() {
   async function handleAdd() {
     if (!myName.trim()) return flash("Enter your name first");
     if (!order || order.closed) return;
+    if (base.mods.includes("custom") && !sel.custom.trim()) return flash("Type your drink first");
     const drink = buildName(base, sel);
     const row = { order_id: order.id, person: myName.trim(), drink, notes: notes.trim() };
     const { error } = await supabase.from("items").insert(row);
@@ -276,6 +277,14 @@ function OrderPage() {
           {base.mods.includes("temp") && (
             <ModRow label="Temperature" options={TEMP} value={sel.temp}
               onPick={(o) => setSel((s) => ({ ...s, temp: o }))} />)}
+          {base.mods.includes("custom") && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
+                What would you like?
+              </div>
+              <input className="kr-input" placeholder="Type your drink — e.g. Iced lemon tea"
+                value={sel.custom} onChange={(e) => setSel((s) => ({ ...s, custom: e.target.value }))} />
+            </div>)}
 
           <div style={previewStyle}>
             <span style={{ font: "500 11px/1 'DM Sans'", color: C.coffeeMid, letterSpacing: ".1em" }}>YOUR ORDER</span>

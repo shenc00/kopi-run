@@ -31,38 +31,36 @@ const getOrgToken = (code) => {
   try { return localStorage.getItem(orgKey(code)); } catch { return null; }
 };
 
-/* ============================ Remembered name + recent orders ============================ */
+/* ============================ Remembered name (device convenience) ============================ */
 const NAME_KEY = "kopirun:name";
-const RECENTS_KEY = "kopirun:recents";
-
 const getSavedName = () => {
   try { return localStorage.getItem(NAME_KEY) || ""; } catch { return ""; }
 };
 const saveName = (name) => {
   try { localStorage.setItem(NAME_KEY, name); } catch {}
 };
-const getRecents = () => {
+
+/* ============================ Per-device drink history ============================ */
+// Stored only on this device. Each entry: { drink, notes, baseId, sel, at }.
+const HISTORY_KEY = "kopirun:history";
+const HISTORY_MAX = 3;
+
+const getHistory = () => {
   try {
-    const raw = localStorage.getItem(RECENTS_KEY);
+    const raw = localStorage.getItem(HISTORY_KEY);
     const list = raw ? JSON.parse(raw) : [];
-    return Array.isArray(list) ? list.sort((a, b) => b.lastUsed - a.lastUsed) : [];
+    return Array.isArray(list) ? list : [];
   } catch { return []; }
 };
-// Record (or refresh) an order in the recent list. role: "organizer" | "joined".
-const rememberOrder = (code, orderName, role) => {
+// Add a drink to this device's history, de-duplicated by drink+notes, newest first, capped.
+const pushHistory = (entry) => {
   try {
-    const list = getRecents().filter((o) => o.code !== code);
-    const prev = getRecents().find((o) => o.code === code);
-    // Don't downgrade organizer -> joined if we revisit
-    const finalRole = prev && prev.role === "organizer" ? "organizer" : role;
-    list.unshift({ code, name: orderName, role: finalRole, lastUsed: Date.now() });
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(list.slice(0, 20)));
-  } catch {}
-};
-const forgetOrder = (code) => {
-  try {
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(getRecents().filter((o) => o.code !== code)));
-  } catch {}
+    const key = `${entry.drink}|${entry.notes || ""}`;
+    const rest = getHistory().filter((e) => `${e.drink}|${e.notes || ""}` !== key);
+    const list = [{ ...entry, at: Date.now() }, ...rest].slice(0, HISTORY_MAX);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+    return list;
+  } catch { return getHistory(); }
 };
 
 /* ============================ App / Router ============================ */
@@ -88,15 +86,10 @@ export default function App() {
 /* ============================ Home ============================ */
 function Home() {
   const navigate = useNavigate();
-  const [name, setName] = useState(getSavedName());
   const [newName, setNewName] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [recents, setRecents] = useState(getRecents());
-
-  // Persist the name as it's typed so it's remembered next visit.
-  useEffect(() => { saveName(name); }, [name]);
 
   async function handleCreate() {
     setErr("");
@@ -110,7 +103,6 @@ function Home() {
         .insert({ code, name: newName.trim(), organizer_token: token });
       if (error) throw error;
       saveOrgToken(code, token);
-      rememberOrder(code, newName.trim(), "organizer");
       navigate(`/order/${code}`);
     } catch (e) {
       setErr("Couldn't create the order. Check your Supabase setup and try again.");
@@ -120,23 +112,17 @@ function Home() {
     }
   }
 
-  async function handleJoin(codeArg) {
+  async function handleJoin() {
     setErr("");
-    const code = (codeArg || joinCode).trim().toUpperCase();
+    const code = joinCode.trim().toUpperCase();
     if (code.length < 4) return setErr("Enter the full order code.");
     setBusy(true);
     try {
       const { data, error } = await supabase
-        .from("orders").select("code, name").eq("code", code).maybeSingle();
+        .from("orders").select("code").eq("code", code).maybeSingle();
       if (error) throw error;
-      if (!data) {
-        setErr("No order found for that code.");
-        forgetOrder(code);          // clean up a stale recent if it was deleted
-        setRecents(getRecents());
-      } else {
-        rememberOrder(code, data.name, "joined");
-        navigate(`/order/${code}`);
-      }
+      if (!data) setErr("No order found for that code.");
+      else navigate(`/order/${code}`);
     } catch (e) {
       setErr("Couldn't join. Try again.");
       console.error(e);
@@ -145,41 +131,8 @@ function Home() {
     }
   }
 
-  function removeRecent(code) {
-    forgetOrder(code);
-    setRecents(getRecents());
-  }
-
   return (
     <>
-      {/* Your name */}
-      <div style={cardStyle}>
-        <SectionTitle>Your name</SectionTitle>
-        <p style={subText}>We'll remember this on this device so you don't retype it.</p>
-        <input className="kr-input" placeholder="e.g. Sally"
-          value={name} onChange={(e) => setName(e.target.value)} />
-      </div>
-
-      {/* Recent runs */}
-      {recents.length > 0 && (
-        <div style={cardStyle}>
-          <SectionTitle>Your recent runs</SectionTitle>
-          {recents.map((o) => (
-            <div key={o.code} style={recentRow}>
-              <button className="kr-recent" onClick={() => handleJoin(o.code)}>
-                <span style={{ font: "700 15px/1.2 'DM Sans'", color: C.ink }}>{o.name}</span>
-                <span style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 3 }}>
-                  <span style={{ font: "800 12px/1 'Fraunces'", letterSpacing: ".12em", color: C.coffee }}>{o.code}</span>
-                  <span style={roleTag(o.role)}>{o.role === "organizer" ? "You started" : "Joined"}</span>
-                </span>
-              </button>
-              <button className="kr-x" title="Remove from list" onClick={() => removeRecent(o.code)}>×</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Start a run */}
       <div style={cardStyle}>
         <SectionTitle>Start a run</SectionTitle>
         <p style={subText}>Create an order, then share the link with everyone joining the dabao.</p>
@@ -190,14 +143,13 @@ function Home() {
         </button>
       </div>
 
-      {/* Join a run */}
       <div style={cardStyle}>
         <SectionTitle>Join a run</SectionTitle>
         <p style={subText}>Got a code from a friend? Punch it in.</p>
         <input className="kr-input" placeholder="Order code"
           value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
           style={{ letterSpacing: ".24em", fontWeight: 700, textTransform: "uppercase" }} />
-        <button className="kr-add" style={{ background: C.green }} onClick={() => handleJoin()} disabled={busy}>
+        <button className="kr-add" style={{ background: C.green }} onClick={handleJoin} disabled={busy}>
           {busy ? "Joining…" : "Join order"}
         </button>
       </div>
@@ -222,6 +174,9 @@ function OrderPage() {
   const [sel, setSel] = useState(defaultSel());
   const [notes, setNotes] = useState("");
 
+  // Per-device history: list of { drink, notes, baseId, sel }
+  const [history, setHistory] = useState(getHistory());
+
   const base = BASES.find((b) => b.id === baseId);
   const isOrganizer = !!getOrgToken(code);
 
@@ -241,8 +196,6 @@ function OrderPage() {
       if (error || !ord) { setStatus("notfound"); return; }
       setOrder(ord);
       setStatus("ready");
-      // Record this order in the device's recent list (organizer status preserved if already set).
-      rememberOrder(ord.code, ord.name, getOrgToken(ord.code) ? "organizer" : "joined");
       await fetchItems(ord.id);
 
       channel = supabase
@@ -258,15 +211,29 @@ function OrderPage() {
     return () => { if (channel) supabase.removeChannel(channel); };
   }, [code, fetchItems]);
 
+  // Restore a past drink into the builder.
+  function pickFromHistory(entry) {
+    if (entry.baseId && BASES.some((b) => b.id === entry.baseId)) {
+      setBaseId(entry.baseId);
+      setSel({ ...defaultSel(), ...entry.sel });
+    }
+    setNotes(entry.notes || "");
+    flash("Loaded — tap Add to confirm");
+  }
+
   async function handleAdd() {
     if (!myName.trim()) return flash("Enter your name first");
     if (!order || order.closed) return;
     if (base.mods.includes("custom") && !sel.custom.trim()) return flash("Type your drink first");
     const drink = buildName(base, sel);
-    const row = { order_id: order.id, person: myName.trim(), drink, notes: notes.trim() };
-    const { error } = await supabase.from("items").insert(row);
+    const person = myName.trim();
+    const cleanNotes = notes.trim();
+    const { error } = await supabase
+      .from("items").insert({ order_id: order.id, person, drink, notes: cleanNotes });
     if (error) { flash("Couldn't add — try again"); console.error(error); return; }
-    saveName(myName.trim());
+    saveName(person);
+    // Save this drink to the device's private history and refresh the quick-picks.
+    setHistory(pushHistory({ drink, notes: cleanNotes, baseId, sel }));
     setNotes("");
     flash(`${drink} added`);
     fetchItems(order.id);
@@ -333,6 +300,32 @@ function OrderPage() {
       {!order.closed ? (
         <div style={cardStyle}>
           <SectionTitle>Build your drink</SectionTitle>
+
+          {/* Name first, so history can load */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
+              Your name
+            </div>
+            <input className="kr-input" placeholder="Your name"
+              value={myName} onChange={(e) => setMyName(e.target.value)} />
+          </div>
+
+          {/* Your usual — this device's recent drinks */}
+          {history.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
+                Your usual — tap to reuse
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+                {history.map((row, i) => (
+                  <button key={i} className="kr-usual" onClick={() => pickFromHistory(row)}>
+                    {row.drink}{row.notes ? ` · ${row.notes}` : ""}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 16 }}>
             {BASES.map((b) => (
               <Pill key={b.id} on={b.id === baseId} accent={C.red}
@@ -353,10 +346,6 @@ function OrderPage() {
             <ModRow label="Pulled" options={[{ id: "no", label: "No" }, { id: "yes", label: "Tarik" }]}
               value={{ id: sel.tarik ? "yes" : "no" }}
               onPick={(o) => setSel((s) => ({ ...s, tarik: o.id === "yes" }))} />)}
-          {base.mods.includes("dino") && (
-            <ModRow label="Extra Milo on top" options={[{ id: "no", label: "No" }, { id: "yes", label: "Dinosaur" }]}
-              value={{ id: sel.dino ? "yes" : "no" }}
-              onPick={(o) => setSel((s) => ({ ...s, dino: o.id === "yes" }))} />)}
           {base.mods.includes("temp") && (
             <ModRow label="Temperature" options={TEMP} value={sel.temp}
               onPick={(o) => setSel((s) => ({ ...s, temp: o }))} />)}
@@ -376,8 +365,6 @@ function OrderPage() {
 
           <input className="kr-input" placeholder="Notes (optional) — e.g. less ice"
             value={notes} onChange={(e) => setNotes(e.target.value)} style={{ marginTop: 12 }} />
-          <input className="kr-input" placeholder="Your name"
-            value={myName} onChange={(e) => setMyName(e.target.value)} style={{ marginTop: 10 }} />
           <button className="kr-add" onClick={handleAdd}>Add to the order</button>
         </div>
       ) : (
@@ -399,10 +386,10 @@ function OrderPage() {
         ) : (
           <>
             <div style={{ marginBottom: 14 }}>
-              {grouped.map(([name, n]) => (
-                <div key={name} style={tallyRow}>
+              {grouped.map(([nm, n]) => (
+                <div key={nm} style={tallyRow}>
                   <span style={{ font: "800 16px/1.2 'Fraunces'", color: C.green, minWidth: 34 }}>{n}×</span>
-                  <span style={{ font: "600 15px/1.3 'DM Sans'", color: C.ink }}>{name}</span>
+                  <span style={{ font: "600 15px/1.3 'DM Sans'", color: C.ink }}>{nm}</span>
                 </div>
               ))}
             </div>
@@ -431,7 +418,7 @@ function NotFound() {
   return (
     <div style={{ ...cardStyle, textAlign: "center" }}>
       <div style={{ font: "800 18px/1.2 'Fraunces'", color: C.red }}>Order not found</div>
-      <p style={subText}>That code doesn't match any order.</p>
+      <p style={subText}>That code does not match any order.</p>
       <Link to="/" style={{ color: C.green, font: "700 14px/1 'DM Sans'", textDecoration: "none" }}>← Back home</Link>
     </div>
   );
@@ -505,14 +492,6 @@ const codeChip = { display: "inline-flex", flexDirection: "column", gap: 3, padd
 const previewStyle = { marginTop: 6, padding: "14px 16px", borderRadius: 14, background: `linear-gradient(135deg, ${C.paperDeep}, #fff)`, border: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 4 };
 const tallyRow = { display: "flex", alignItems: "baseline", gap: 10, padding: "5px 0" };
 const subText = { font: "500 13px/1.5 'DM Sans'", color: C.coffeeMid, margin: "0 0 12px" };
-const recentRow = { display: "flex", alignItems: "stretch", gap: 8, marginBottom: 8 };
-const roleTag = (role) => ({
-  font: "700 9px/1 'DM Sans'", letterSpacing: ".08em", textTransform: "uppercase",
-  padding: "3px 7px", borderRadius: 100,
-  color: role === "organizer" ? "#fff" : C.green,
-  background: role === "organizer" ? C.green : "transparent",
-  border: `1px solid ${C.green}`,
-});
 const errStyle = { marginTop: 14, padding: "10px 14px", borderRadius: 12, background: "#fbe3df", color: C.red, font: "600 13px/1.4 'DM Sans'", textAlign: "center" };
 const toastStyle = { position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", background: C.ink, color: C.paper, padding: "11px 20px", borderRadius: 100, font: "600 13px/1 'DM Sans'", boxShadow: "0 10px 30px -8px rgba(0,0,0,.5)", zIndex: 50, animation: "krpop .25s ease" };
 
@@ -522,6 +501,8 @@ const css = `
 body { margin: 0; }
 .kr-pill { padding: 8px 13px; border-radius: 100px; border: 1.5px solid; font-family: 'DM Sans'; font-size: 13px; cursor: pointer; transition: all .15s ease; }
 .kr-pill:hover { transform: translateY(-1px); }
+.kr-usual { padding: 8px 13px; border-radius: 100px; border: 1.5px dashed ${C.gold}; background: ${C.paperDeep}; color: ${C.coffee}; font-family: 'DM Sans'; font-weight: 600; font-size: 12.5px; cursor: pointer; transition: all .15s ease; }
+.kr-usual:hover { border-style: solid; border-color: ${C.green}; color: ${C.green}; transform: translateY(-1px); }
 .kr-input { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1.5px solid ${C.line}; background: #fff; font-family: 'DM Sans'; font-size: 15px; color: ${C.ink}; outline: none; transition: border-color .15s; }
 .kr-input:focus { border-color: ${C.green}; }
 .kr-add { width: 100%; margin-top: 14px; padding: 13px; border: none; border-radius: 12px; background: ${C.red}; color: #fff; font-family: 'Fraunces'; font-weight: 700; font-size: 16px; cursor: pointer; transition: transform .12s, filter .15s; }
@@ -534,10 +515,6 @@ body { margin: 0; }
 .kr-ghost:hover { border-color: ${C.coffeeMid}; }
 .kr-close { width: 100%; margin-top: 14px; padding: 11px; border: 1.5px solid ${C.red}; border-radius: 12px; background: transparent; color: ${C.red}; font-family: 'DM Sans'; font-weight: 700; font-size: 14px; cursor: pointer; transition: all .15s; }
 .kr-close:hover { background: ${C.red}; color: #fff; }
-.kr-recent { flex: 1; text-align: left; display: flex; flex-direction: column; gap: 0; padding: 11px 14px; border: 1.5px solid ${C.line}; border-radius: 12px; background: #fff; cursor: pointer; transition: border-color .15s, transform .1s; }
-.kr-recent:hover { border-color: ${C.green}; transform: translateY(-1px); }
-.kr-x { width: 38px; flex: 0 0 auto; border: 1.5px solid ${C.line}; border-radius: 12px; background: transparent; color: ${C.coffeeMid}; font-size: 20px; line-height: 1; cursor: pointer; transition: all .15s; }
-.kr-x:hover { border-color: ${C.red}; color: ${C.red}; }
 a { color: inherit; }
 @keyframes krpop { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 `;

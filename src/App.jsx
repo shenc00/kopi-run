@@ -31,6 +31,40 @@ const getOrgToken = (code) => {
   try { return localStorage.getItem(orgKey(code)); } catch { return null; }
 };
 
+/* ============================ Remembered name + recent orders ============================ */
+const NAME_KEY = "kopirun:name";
+const RECENTS_KEY = "kopirun:recents";
+
+const getSavedName = () => {
+  try { return localStorage.getItem(NAME_KEY) || ""; } catch { return ""; }
+};
+const saveName = (name) => {
+  try { localStorage.setItem(NAME_KEY, name); } catch {}
+};
+const getRecents = () => {
+  try {
+    const raw = localStorage.getItem(RECENTS_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.sort((a, b) => b.lastUsed - a.lastUsed) : [];
+  } catch { return []; }
+};
+// Record (or refresh) an order in the recent list. role: "organizer" | "joined".
+const rememberOrder = (code, orderName, role) => {
+  try {
+    const list = getRecents().filter((o) => o.code !== code);
+    const prev = getRecents().find((o) => o.code === code);
+    // Don't downgrade organizer -> joined if we revisit
+    const finalRole = prev && prev.role === "organizer" ? "organizer" : role;
+    list.unshift({ code, name: orderName, role: finalRole, lastUsed: Date.now() });
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(list.slice(0, 20)));
+  } catch {}
+};
+const forgetOrder = (code) => {
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(getRecents().filter((o) => o.code !== code)));
+  } catch {}
+};
+
 /* ============================ App / Router ============================ */
 export default function App() {
   return (
@@ -54,10 +88,15 @@ export default function App() {
 /* ============================ Home ============================ */
 function Home() {
   const navigate = useNavigate();
+  const [name, setName] = useState(getSavedName());
   const [newName, setNewName] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [recents, setRecents] = useState(getRecents());
+
+  // Persist the name as it's typed so it's remembered next visit.
+  useEffect(() => { saveName(name); }, [name]);
 
   async function handleCreate() {
     setErr("");
@@ -71,6 +110,7 @@ function Home() {
         .insert({ code, name: newName.trim(), organizer_token: token });
       if (error) throw error;
       saveOrgToken(code, token);
+      rememberOrder(code, newName.trim(), "organizer");
       navigate(`/order/${code}`);
     } catch (e) {
       setErr("Couldn't create the order. Check your Supabase setup and try again.");
@@ -80,17 +120,23 @@ function Home() {
     }
   }
 
-  async function handleJoin() {
+  async function handleJoin(codeArg) {
     setErr("");
-    const code = joinCode.trim().toUpperCase();
+    const code = (codeArg || joinCode).trim().toUpperCase();
     if (code.length < 4) return setErr("Enter the full order code.");
     setBusy(true);
     try {
       const { data, error } = await supabase
-        .from("orders").select("code").eq("code", code).maybeSingle();
+        .from("orders").select("code, name").eq("code", code).maybeSingle();
       if (error) throw error;
-      if (!data) setErr("No order found for that code.");
-      else navigate(`/order/${code}`);
+      if (!data) {
+        setErr("No order found for that code.");
+        forgetOrder(code);          // clean up a stale recent if it was deleted
+        setRecents(getRecents());
+      } else {
+        rememberOrder(code, data.name, "joined");
+        navigate(`/order/${code}`);
+      }
     } catch (e) {
       setErr("Couldn't join. Try again.");
       console.error(e);
@@ -99,8 +145,41 @@ function Home() {
     }
   }
 
+  function removeRecent(code) {
+    forgetOrder(code);
+    setRecents(getRecents());
+  }
+
   return (
     <>
+      {/* Your name */}
+      <div style={cardStyle}>
+        <SectionTitle>Your name</SectionTitle>
+        <p style={subText}>We'll remember this on this device so you don't retype it.</p>
+        <input className="kr-input" placeholder="e.g. Sally"
+          value={name} onChange={(e) => setName(e.target.value)} />
+      </div>
+
+      {/* Recent runs */}
+      {recents.length > 0 && (
+        <div style={cardStyle}>
+          <SectionTitle>Your recent runs</SectionTitle>
+          {recents.map((o) => (
+            <div key={o.code} style={recentRow}>
+              <button className="kr-recent" onClick={() => handleJoin(o.code)}>
+                <span style={{ font: "700 15px/1.2 'DM Sans'", color: C.ink }}>{o.name}</span>
+                <span style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 3 }}>
+                  <span style={{ font: "800 12px/1 'Fraunces'", letterSpacing: ".12em", color: C.coffee }}>{o.code}</span>
+                  <span style={roleTag(o.role)}>{o.role === "organizer" ? "You started" : "Joined"}</span>
+                </span>
+              </button>
+              <button className="kr-x" title="Remove from list" onClick={() => removeRecent(o.code)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Start a run */}
       <div style={cardStyle}>
         <SectionTitle>Start a run</SectionTitle>
         <p style={subText}>Create an order, then share the link with everyone joining the dabao.</p>
@@ -111,13 +190,14 @@ function Home() {
         </button>
       </div>
 
+      {/* Join a run */}
       <div style={cardStyle}>
         <SectionTitle>Join a run</SectionTitle>
         <p style={subText}>Got a code from a friend? Punch it in.</p>
         <input className="kr-input" placeholder="Order code"
           value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
           style={{ letterSpacing: ".24em", fontWeight: 700, textTransform: "uppercase" }} />
-        <button className="kr-add" style={{ background: C.green }} onClick={handleJoin} disabled={busy}>
+        <button className="kr-add" style={{ background: C.green }} onClick={() => handleJoin()} disabled={busy}>
           {busy ? "Joining…" : "Join order"}
         </button>
       </div>
@@ -137,7 +217,7 @@ function OrderPage() {
   const [order, setOrder] = useState(null);
   const [items, setItems] = useState([]);
   const [status, setStatus] = useState("loading"); // loading | ready | notfound
-  const [myName, setMyName] = useState("");
+  const [myName, setMyName] = useState(getSavedName());
   const [baseId, setBaseId] = useState("kopi");
   const [sel, setSel] = useState(defaultSel());
   const [notes, setNotes] = useState("");
@@ -161,6 +241,8 @@ function OrderPage() {
       if (error || !ord) { setStatus("notfound"); return; }
       setOrder(ord);
       setStatus("ready");
+      // Record this order in the device's recent list (organizer status preserved if already set).
+      rememberOrder(ord.code, ord.name, getOrgToken(ord.code) ? "organizer" : "joined");
       await fetchItems(ord.id);
 
       channel = supabase
@@ -184,6 +266,7 @@ function OrderPage() {
     const row = { order_id: order.id, person: myName.trim(), drink, notes: notes.trim() };
     const { error } = await supabase.from("items").insert(row);
     if (error) { flash("Couldn't add — try again"); console.error(error); return; }
+    saveName(myName.trim());
     setNotes("");
     flash(`${drink} added`);
     fetchItems(order.id);
@@ -422,6 +505,14 @@ const codeChip = { display: "inline-flex", flexDirection: "column", gap: 3, padd
 const previewStyle = { marginTop: 6, padding: "14px 16px", borderRadius: 14, background: `linear-gradient(135deg, ${C.paperDeep}, #fff)`, border: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 4 };
 const tallyRow = { display: "flex", alignItems: "baseline", gap: 10, padding: "5px 0" };
 const subText = { font: "500 13px/1.5 'DM Sans'", color: C.coffeeMid, margin: "0 0 12px" };
+const recentRow = { display: "flex", alignItems: "stretch", gap: 8, marginBottom: 8 };
+const roleTag = (role) => ({
+  font: "700 9px/1 'DM Sans'", letterSpacing: ".08em", textTransform: "uppercase",
+  padding: "3px 7px", borderRadius: 100,
+  color: role === "organizer" ? "#fff" : C.green,
+  background: role === "organizer" ? C.green : "transparent",
+  border: `1px solid ${C.green}`,
+});
 const errStyle = { marginTop: 14, padding: "10px 14px", borderRadius: 12, background: "#fbe3df", color: C.red, font: "600 13px/1.4 'DM Sans'", textAlign: "center" };
 const toastStyle = { position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", background: C.ink, color: C.paper, padding: "11px 20px", borderRadius: 100, font: "600 13px/1 'DM Sans'", boxShadow: "0 10px 30px -8px rgba(0,0,0,.5)", zIndex: 50, animation: "krpop .25s ease" };
 
@@ -443,6 +534,10 @@ body { margin: 0; }
 .kr-ghost:hover { border-color: ${C.coffeeMid}; }
 .kr-close { width: 100%; margin-top: 14px; padding: 11px; border: 1.5px solid ${C.red}; border-radius: 12px; background: transparent; color: ${C.red}; font-family: 'DM Sans'; font-weight: 700; font-size: 14px; cursor: pointer; transition: all .15s; }
 .kr-close:hover { background: ${C.red}; color: #fff; }
+.kr-recent { flex: 1; text-align: left; display: flex; flex-direction: column; gap: 0; padding: 11px 14px; border: 1.5px solid ${C.line}; border-radius: 12px; background: #fff; cursor: pointer; transition: border-color .15s, transform .1s; }
+.kr-recent:hover { border-color: ${C.green}; transform: translateY(-1px); }
+.kr-x { width: 38px; flex: 0 0 auto; border: 1.5px solid ${C.line}; border-radius: 12px; background: transparent; color: ${C.coffeeMid}; font-size: 20px; line-height: 1; cursor: pointer; transition: all .15s; }
+.kr-x:hover { border-color: ${C.red}; color: ${C.red}; }
 a { color: inherit; }
 @keyframes krpop { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 `;

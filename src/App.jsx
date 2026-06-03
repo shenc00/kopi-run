@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Routes, Route, useNavigate, useParams, Link } from "react-router-dom";
+import { Routes, Route, useNavigate, useParams, useLocation, Link } from "react-router-dom";
 import { supabase } from "./supabaseClient.js";
 import { BASES, MILK, SUGAR, STRENGTH, TEMP, defaultSel, buildName, genCode } from "./menu.js";
 
@@ -71,7 +71,7 @@ function Home() {
         .insert({ code, name: newName.trim(), organizer_token: token });
       if (error) throw error;
       saveOrgToken(code, token);
-      navigate(`/order/${code}`);
+      navigate(`/order/${code}`, { state: { justCreated: true } });
     } catch (e) {
       setErr("Couldn't create the order. Check your Supabase setup and try again.");
       console.error(e);
@@ -132,7 +132,17 @@ function OrderPage() {
   const { code: rawCode } = useParams();
   const code = (rawCode || "").toUpperCase();
   const navigate = useNavigate();
+  const location = useLocation();
   const [toast, flash] = useToast();
+  const [showShare, setShowShare] = useState(false);
+
+  // If we just landed here from "Create order", pop the share dialog once.
+  useEffect(() => {
+    if (location.state?.justCreated) {
+      setShowShare(true);
+      window.history.replaceState({}, document.title); // so a refresh won't reopen it
+    }
+  }, [location.state]);
 
   const [order, setOrder] = useState(null);
   const [items, setItems] = useState([]);
@@ -233,8 +243,8 @@ function OrderPage() {
             <span style={{ font: "600 9px/1 'DM Sans'", letterSpacing: ".2em", color: C.coffeeMid }}>CODE</span>
             <span style={{ font: "800 19px/1 'Fraunces'", letterSpacing: ".18em", color: C.coffee }}>{order.code}</span>
           </div>
-          <button className="kr-solid" style={{ background: C.green }} onClick={() => copy(shareLink, "Link copied")}>
-            Copy link
+          <button className="kr-solid" style={{ background: C.green }} onClick={() => setShowShare(true)}>
+            Share / invite
           </button>
           <button className="kr-solid" style={{ background: C.coffee }} onClick={() => copy(order.code, "Code copied")}>
             Copy code
@@ -339,8 +349,58 @@ function OrderPage() {
         )}
       </div>
 
+      {showShare && (
+        <ShareModal
+          orderName={order.name}
+          shareLink={shareLink}
+          code={order.code}
+          onCopyLink={() => copy(shareLink, "Link copied")}
+          onCopyCode={() => copy(order.code, "Code copied")}
+          onClose={() => setShowShare(false)}
+        />
+      )}
+
       {toast && <div style={toastStyle}>{toast}</div>}
     </>
+  );
+}
+
+/* ============================ Share modal ============================ */
+function ShareModal({ orderName, shareLink, code, onCopyLink, onCopyCode, onClose }) {
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={{ font: "800 20px/1.2 'Fraunces'", color: C.ink }}>Run created — invite your kaki 🎉</div>
+        <p style={{ ...subText, marginTop: 8 }}>
+          This is the unique link for <strong>{orderName}</strong>. Anyone who opens it lands on the
+          same live order. Send it to everyone joining the dabao.
+        </p>
+
+        <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, margin: "4px 0 8px" }}>
+          Share link
+        </div>
+        <input className="kr-input" readOnly value={shareLink}
+          onFocus={(e) => e.target.select()}
+          style={{ fontSize: 13, color: C.coffee }} />
+        <button className="kr-add" style={{ background: C.green, marginTop: 12 }} onClick={onCopyLink}>
+          Copy link
+        </button>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0 4px" }}>
+          <div style={{ height: 1, flex: 1, background: C.line }} />
+          <span style={{ font: "500 11px/1 'DM Sans'", color: C.coffeeMid }}>or share the code</span>
+          <div style={{ height: 1, flex: 1, background: C.line }} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 8 }}>
+          <span style={{ font: "800 24px/1 'Fraunces'", letterSpacing: ".2em", color: C.coffee }}>{code}</span>
+          <button className="kr-ghost" onClick={onCopyCode}>Copy code</button>
+        </div>
+
+        <button className="kr-close" style={{ borderColor: C.line, color: C.coffeeMid, marginTop: 18 }} onClick={onClose}>
+          Done
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -424,6 +484,8 @@ const tallyRow = { display: "flex", alignItems: "baseline", gap: 10, padding: "5
 const subText = { font: "500 13px/1.5 'DM Sans'", color: C.coffeeMid, margin: "0 0 12px" };
 const errStyle = { marginTop: 14, padding: "10px 14px", borderRadius: 12, background: "#fbe3df", color: C.red, font: "600 13px/1.4 'DM Sans'", textAlign: "center" };
 const toastStyle = { position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", background: C.ink, color: C.paper, padding: "11px 20px", borderRadius: 100, font: "600 13px/1 'DM Sans'", boxShadow: "0 10px 30px -8px rgba(0,0,0,.5)", zIndex: 50, animation: "krpop .25s ease" };
+const overlayStyle = { position: "fixed", inset: 0, background: "rgba(44,26,14,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18, zIndex: 60, animation: "krfade .2s ease" };
+const modalStyle = { width: "100%", maxWidth: 420, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 20, padding: "22px 20px", boxShadow: "0 24px 60px -20px rgba(44,26,14,0.7)", animation: "krrise .25s ease" };
 
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,700;0,9..144,900;1,9..144,600;1,9..144,700&family=DM+Sans:wght@400;500;600;700&display=swap');
@@ -445,4 +507,6 @@ body { margin: 0; }
 .kr-close:hover { background: ${C.red}; color: #fff; }
 a { color: inherit; }
 @keyframes krpop { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes krfade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes krrise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 `;

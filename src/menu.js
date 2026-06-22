@@ -55,6 +55,46 @@ export function buildName(base, sel) {
   return p.join(" ");
 }
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Best-effort inverse of buildName: turn a saved drink string back into
+// { baseId, sel } so the builder can be pre-filled when editing an item.
+// If the string can't be reproduced exactly from the menu (e.g. a free-text
+// "Others" drink, or anything unrecognised), it falls back to the custom
+// "Others" base holding the original text — so nothing is ever lost.
+export function parseName(drink) {
+  const text = (drink || "").trim();
+  const others = { baseId: "others", sel: { ...defaultSel(), custom: text } };
+
+  const base = BASES.find(
+    (b) => !b.mods.includes("custom") &&
+      new RegExp(`^${escapeRegExp(b.name)}(\\s|$)`, "i").test(text)
+  );
+  if (!base) return others;
+
+  const rest = text.slice(base.name.length);
+  const pick = (options) => {
+    for (const o of options) {
+      if (o.token && new RegExp(`(^|\\s)${escapeRegExp(o.token)}(\\s|$)`, "i").test(rest)) return o;
+    }
+    return options.find((o) => o.token === "") || options[0];
+  };
+
+  const sel = defaultSel();
+  if (base.mods.includes("milk")) sel.milk = pick(MILK);
+  if (base.mods.includes("strength")) sel.strength = pick(STRENGTH);
+  if (base.mods.includes("sugar")) sel.sugar = pick(SUGAR);
+  if (base.mods.includes("temp")) sel.temp = pick(TEMP);
+  if (base.mods.includes("tarik")) sel.tarik = /(^|\s)Tarik(\s|$)/i.test(rest);
+
+  // Only trust the parse if it round-trips exactly; otherwise keep free text.
+  return buildName(base, sel).toLowerCase() === text.toLowerCase()
+    ? { baseId: base.id, sel }
+    : others;
+}
+
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 export function genCode(n = 5) {
   let s = "";

@@ -38,11 +38,17 @@ drop policy if exists orders_select on public.orders;
 drop policy if exists orders_insert on public.orders;
 drop policy if exists items_select  on public.items;
 drop policy if exists items_insert  on public.items;
+drop policy if exists items_update  on public.items;
+drop policy if exists items_delete  on public.items;
 
 create policy orders_select on public.orders for select using (true);
 create policy orders_insert on public.orders for insert with check (true);
 create policy items_select  on public.items  for select using (true);
 create policy items_insert  on public.items  for insert with check (true);
+-- Like insert, edit/delete are open at the DB level (link-based, no login).
+-- The app limits the buttons to the drinks a device added, plus the organizer.
+create policy items_update  on public.items  for update using (true) with check (true);
+create policy items_delete  on public.items  for delete using (true);
 
 -- ---------------- Close order (organizer only) ----------------
 -- Runs with elevated rights but only flips `closed` when the supplied
@@ -72,4 +78,4 @@ alter publication supabase_realtime add table public.orders;
 -- Future-proofing: from late 2026 Supabase requires explicit grants for
 -- the Data API to see tables. Granting now keeps things working either way.
 grant select, insert on public.orders to anon, authenticated;
-grant select, insert on public.items  to anon, authenticated;
+grant select, insert, update, delete on public.items  to anon, authenticated;

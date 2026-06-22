@@ -31,6 +31,33 @@ const getOrgToken = (code) => {
   try { return localStorage.getItem(orgKey(code)); } catch { return null; }
 };
 
+/* ============================ Items this device added ============================ */
+// We don't have logins, so "mine" is tracked locally: the ids of items added
+// from this device. Used to decide who may edit/delete a drink (plus organizer).
+const mineKey = (code) => `kopirun:mine:${code}`;
+const getMine = (code) => {
+  try {
+    const raw = localStorage.getItem(mineKey(code));
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch { return []; }
+};
+const addMine = (code, id) => {
+  try {
+    const list = getMine(code);
+    if (!list.includes(id)) list.push(id);
+    localStorage.setItem(mineKey(code), JSON.stringify(list));
+    return list;
+  } catch { return getMine(code); }
+};
+const removeMine = (code, id) => {
+  try {
+    const list = getMine(code).filter((x) => x !== id);
+    localStorage.setItem(mineKey(code), JSON.stringify(list));
+    return list;
+  } catch { return getMine(code); }
+};
+
 /* ============================ Remembered name (device convenience) ============================ */
 const NAME_KEY = "kopirun:name";
 const getSavedName = () => {
@@ -187,8 +214,19 @@ function OrderPage() {
   // Per-device history: list of { drink, notes, baseId, sel }
   const [history, setHistory] = useState(getHistory());
 
+  // Ids of items added from this device — drives edit/delete permissions.
+  const [mine, setMine] = useState(() => getMine(code));
+  // Inline editing state for a single item.
+  const [editId, setEditId] = useState(null);
+  const [editDrink, setEditDrink] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editPerson, setEditPerson] = useState("");
+  // Id of the item awaiting a delete confirmation.
+  const [confirmId, setConfirmId] = useState(null);
+
   const base = BASES.find((b) => b.id === baseId);
   const isOrganizer = !!getOrgToken(code);
+  const canManage = (it) => !order?.closed && (isOrganizer || mine.includes(it.id));
 
   const fetchItems = useCallback(async (orderId) => {
     const { data } = await supabase
@@ -238,14 +276,56 @@ function OrderPage() {
     const drink = buildName(base, sel);
     const person = myName.trim();
     const cleanNotes = notes.trim();
-    const { error } = await supabase
-      .from("items").insert({ order_id: order.id, person, drink, notes: cleanNotes });
+    const { data, error } = await supabase
+      .from("items").insert({ order_id: order.id, person, drink, notes: cleanNotes })
+      .select("id").single();
     if (error) { flash("Couldn't add — try again"); console.error(error); return; }
+    // Remember this drink as "mine" so it shows edit/delete controls.
+    if (data?.id) setMine(addMine(code, data.id));
     saveName(person);
     // Save this drink to the device's private history and refresh the quick-picks.
     setHistory(pushHistory({ drink, notes: cleanNotes, baseId, sel }));
     setNotes("");
     flash(`${drink} added`);
+    fetchItems(order.id);
+  }
+
+  function startEdit(it) {
+    setConfirmId(null);
+    setEditId(it.id);
+    setEditDrink(it.drink);
+    setEditNotes(it.notes || "");
+    setEditPerson(it.person);
+  }
+
+  function cancelEdit() {
+    setEditId(null);
+    setEditDrink("");
+    setEditNotes("");
+    setEditPerson("");
+  }
+
+  async function handleSaveEdit(it) {
+    const drink = editDrink.trim();
+    const person = editPerson.trim();
+    if (!drink) return flash("Drink can't be empty");
+    if (!person) return flash("Name can't be empty");
+    const { error } = await supabase
+      .from("items")
+      .update({ drink, person, notes: editNotes.trim() })
+      .eq("id", it.id);
+    if (error) { flash("Couldn't save — try again"); console.error(error); return; }
+    cancelEdit();
+    flash("Order updated");
+    fetchItems(order.id);
+  }
+
+  async function handleDelete(it) {
+    const { error } = await supabase.from("items").delete().eq("id", it.id);
+    if (error) { flash("Couldn't remove — try again"); console.error(error); return; }
+    setMine(removeMine(code, it.id));
+    setConfirmId(null);
+    flash("Drink removed");
     fetchItems(order.id);
   }
 
@@ -407,14 +487,44 @@ function OrderPage() {
             <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
               Who ordered what
             </div>
-            {items.map((it) => (
-              <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "5px 0", borderBottom: `1px dotted ${C.line}` }}>
-                <span style={{ font: "600 13px/1.3 'DM Sans'", color: C.coffee }}>{it.person}</span>
-                <span style={{ font: "500 13px/1.3 'DM Sans'", color: C.ink, textAlign: "right" }}>
-                  {it.drink}{it.notes ? <em style={{ color: C.coffeeMid }}> · {it.notes}</em> : null}
-                </span>
-              </div>
-            ))}
+            {items.map((it) =>
+              editId === it.id ? (
+                <div key={it.id} style={{ padding: "10px 0", borderBottom: `1px dotted ${C.line}` }}>
+                  <input className="kr-input" placeholder="Name" value={editPerson}
+                    onChange={(e) => setEditPerson(e.target.value)} style={{ marginBottom: 8 }} />
+                  <input className="kr-input" placeholder="Drink" value={editDrink}
+                    onChange={(e) => setEditDrink(e.target.value)} style={{ marginBottom: 8 }} />
+                  <input className="kr-input" placeholder="Notes (optional)" value={editNotes}
+                    onChange={(e) => setEditNotes(e.target.value)} />
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button className="kr-solid" style={{ background: C.green, flex: 1 }} onClick={() => handleSaveEdit(it)}>Save</button>
+                    <button className="kr-ghost" onClick={cancelEdit}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "5px 0", borderBottom: `1px dotted ${C.line}` }}>
+                  <span style={{ font: "600 13px/1.3 'DM Sans'", color: C.coffee, flexShrink: 0 }}>{it.person}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <span style={{ font: "500 13px/1.3 'DM Sans'", color: C.ink, textAlign: "right" }}>
+                      {it.drink}{it.notes ? <em style={{ color: C.coffeeMid }}> · {it.notes}</em> : null}
+                    </span>
+                    {canManage(it) && (
+                      confirmId === it.id ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <button className="kr-mini" style={{ borderColor: C.red, color: C.red }} onClick={() => handleDelete(it)}>Remove</button>
+                          <button className="kr-mini" onClick={() => setConfirmId(null)}>Cancel</button>
+                        </span>
+                      ) : (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <button className="kr-mini" onClick={() => startEdit(it)} aria-label="Edit drink">Edit</button>
+                          <button className="kr-mini" style={{ borderColor: C.red, color: C.red }} onClick={() => { cancelEdit(); setConfirmId(it.id); }} aria-label="Delete drink">Delete</button>
+                        </span>
+                      )
+                    )}
+                  </div>
+                </div>
+              )
+            )}
           </>
         )}
       </div>
@@ -575,6 +685,8 @@ body { margin: 0; }
 .kr-solid:hover { filter: brightness(1.08); }
 .kr-ghost { padding: 7px 12px; border: 1.5px solid ${C.line}; border-radius: 100px; background: transparent; color: ${C.coffeeMid}; font-family: 'DM Sans'; font-weight: 600; font-size: 12px; cursor: pointer; }
 .kr-ghost:hover { border-color: ${C.coffeeMid}; }
+.kr-mini { padding: 4px 10px; border: 1.5px solid ${C.line}; border-radius: 100px; background: transparent; color: ${C.coffeeMid}; font-family: 'DM Sans'; font-weight: 600; font-size: 11px; cursor: pointer; transition: all .15s; }
+.kr-mini:hover { filter: brightness(.95); transform: translateY(-1px); }
 .kr-close { width: 100%; margin-top: 14px; padding: 11px; border: 1.5px solid ${C.red}; border-radius: 12px; background: transparent; color: ${C.red}; font-family: 'DM Sans'; font-weight: 700; font-size: 14px; cursor: pointer; transition: all .15s; }
 .kr-close:hover { background: ${C.red}; color: #fff; }
 a { color: inherit; }

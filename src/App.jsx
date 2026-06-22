@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Routes, Route, useNavigate, useParams, useLocation, Link } from "react-router-dom";
 import { supabase } from "./supabaseClient.js";
-import { BASES, MILK, SUGAR, STRENGTH, TEMP, defaultSel, buildName, genCode } from "./menu.js";
+import { BASES, MILK, SUGAR, STRENGTH, TEMP, defaultSel, buildName, parseName, genCode } from "./menu.js";
 
 /* ============================ Kopitiam palette ============================ */
 const C = {
@@ -216,9 +216,11 @@ function OrderPage() {
 
   // Ids of items added from this device — drives edit/delete permissions.
   const [mine, setMine] = useState(() => getMine(code));
-  // Inline editing state for a single item.
+  // Inline editing state for a single item. The drink is edited through the
+  // same pill builder as the Add card, so we keep structured baseId + sel.
   const [editId, setEditId] = useState(null);
-  const [editDrink, setEditDrink] = useState("");
+  const [editBaseId, setEditBaseId] = useState("kopi");
+  const [editSel, setEditSel] = useState(defaultSel());
   const [editNotes, setEditNotes] = useState("");
   const [editPerson, setEditPerson] = useState("");
   // Id of the item awaiting a delete confirmation.
@@ -292,23 +294,25 @@ function OrderPage() {
 
   function startEdit(it) {
     setConfirmId(null);
+    const { baseId, sel } = parseName(it.drink);
     setEditId(it.id);
-    setEditDrink(it.drink);
+    setEditBaseId(baseId);
+    setEditSel(sel);
     setEditNotes(it.notes || "");
     setEditPerson(it.person);
   }
 
   function cancelEdit() {
     setEditId(null);
-    setEditDrink("");
     setEditNotes("");
     setEditPerson("");
   }
 
   async function handleSaveEdit(it) {
-    const drink = editDrink.trim();
+    const editBase = BASES.find((b) => b.id === editBaseId);
+    if (editBase.mods.includes("custom") && !editSel.custom.trim()) return flash("Type your drink first");
+    const drink = buildName(editBase, editSel);
     const person = editPerson.trim();
-    if (!drink) return flash("Drink can't be empty");
     if (!person) return flash("Name can't be empty");
     const { error } = await supabase
       .from("items")
@@ -416,37 +420,8 @@ function OrderPage() {
             </div>
           )}
 
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 16 }}>
-            {BASES.map((b) => (
-              <Pill key={b.id} on={b.id === baseId} accent={C.red}
-                onClick={() => { setBaseId(b.id); setSel(defaultSel()); }}>{b.name}</Pill>
-            ))}
-          </div>
-
-          {base.mods.includes("milk") && (
-            <ModRow label="Milk" options={MILK} value={sel.milk}
-              onPick={(o) => setSel((s) => ({ ...s, milk: o }))} />)}
-          {base.mods.includes("strength") && (
-            <ModRow label="Strength" options={STRENGTH} value={sel.strength}
-              onPick={(o) => setSel((s) => ({ ...s, strength: o }))} />)}
-          {base.mods.includes("sugar") && (
-            <ModRow label="Sweetness" options={SUGAR} value={sel.sugar}
-              onPick={(o) => setSel((s) => ({ ...s, sugar: o }))} />)}
-          {base.mods.includes("tarik") && (
-            <ModRow label="Pulled" options={[{ id: "no", label: "No" }, { id: "yes", label: "Tarik" }]}
-              value={{ id: sel.tarik ? "yes" : "no" }}
-              onPick={(o) => setSel((s) => ({ ...s, tarik: o.id === "yes" }))} />)}
-          {base.mods.includes("temp") && (
-            <ModRow label="Temperature" options={TEMP} value={sel.temp}
-              onPick={(o) => setSel((s) => ({ ...s, temp: o }))} />)}
-          {base.mods.includes("custom") && (
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
-                What would you like?
-              </div>
-              <input className="kr-input" placeholder="Type your drink — e.g. Iced lemon tea"
-                value={sel.custom} onChange={(e) => setSel((s) => ({ ...s, custom: e.target.value }))} />
-            </div>)}
+          <DrinkBuilder baseId={baseId} sel={sel}
+            onBase={(id) => { setBaseId(id); setSel(defaultSel()); }} onSel={setSel} />
 
           <div style={previewStyle}>
             <span style={{ font: "500 11px/1 'DM Sans'", color: C.coffeeMid, letterSpacing: ".1em" }}>YOUR ORDER</span>
@@ -489,15 +464,27 @@ function OrderPage() {
             </div>
             {items.map((it) =>
               editId === it.id ? (
-                <div key={it.id} style={{ padding: "10px 0", borderBottom: `1px dotted ${C.line}` }}>
+                <div key={it.id} style={{ padding: "12px 0", borderBottom: `1px dotted ${C.line}` }}>
+                  <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
+                    Name
+                  </div>
                   <input className="kr-input" placeholder="Name" value={editPerson}
-                    onChange={(e) => setEditPerson(e.target.value)} style={{ marginBottom: 8 }} />
-                  <input className="kr-input" placeholder="Drink" value={editDrink}
-                    onChange={(e) => setEditDrink(e.target.value)} style={{ marginBottom: 8 }} />
-                  <input className="kr-input" placeholder="Notes (optional)" value={editNotes}
-                    onChange={(e) => setEditNotes(e.target.value)} />
-                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                    <button className="kr-solid" style={{ background: C.green, flex: 1 }} onClick={() => handleSaveEdit(it)}>Save</button>
+                    onChange={(e) => setEditPerson(e.target.value)} style={{ marginBottom: 16 }} />
+
+                  <DrinkBuilder baseId={editBaseId} sel={editSel}
+                    onBase={(id) => { setEditBaseId(id); setEditSel(defaultSel()); }} onSel={setEditSel} />
+
+                  <div style={previewStyle}>
+                    <span style={{ font: "500 11px/1 'DM Sans'", color: C.coffeeMid, letterSpacing: ".1em" }}>UPDATED ORDER</span>
+                    <span style={{ font: "700 italic 20px/1.1 'Fraunces'", color: C.coffee }}>
+                      {buildName(BASES.find((b) => b.id === editBaseId), editSel)}
+                    </span>
+                  </div>
+
+                  <input className="kr-input" placeholder="Notes (optional) — e.g. less ice" value={editNotes}
+                    onChange={(e) => setEditNotes(e.target.value)} style={{ marginTop: 12 }} />
+                  <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                    <button className="kr-solid" style={{ background: C.green, flex: 1 }} onClick={() => handleSaveEdit(it)}>Save changes</button>
                     <button className="kr-ghost" onClick={cancelEdit}>Cancel</button>
                   </div>
                 </div>
@@ -602,6 +589,47 @@ function Pill({ on, onClick, children, accent = C.green }) {
                borderColor: on ? accent : C.line, fontWeight: on ? 700 : 500 }}>
       {children}
     </button>
+  );
+}
+
+// Base pills + modifier rows. `onBase(id)` should reset the selection;
+// `onSel` is a setState-style updater so callers can pass setSel directly.
+function DrinkBuilder({ baseId, sel, onBase, onSel }) {
+  const base = BASES.find((b) => b.id === baseId);
+  return (
+    <>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 16 }}>
+        {BASES.map((b) => (
+          <Pill key={b.id} on={b.id === baseId} accent={C.red}
+            onClick={() => onBase(b.id)}>{b.name}</Pill>
+        ))}
+      </div>
+
+      {base.mods.includes("milk") && (
+        <ModRow label="Milk" options={MILK} value={sel.milk}
+          onPick={(o) => onSel((s) => ({ ...s, milk: o }))} />)}
+      {base.mods.includes("strength") && (
+        <ModRow label="Strength" options={STRENGTH} value={sel.strength}
+          onPick={(o) => onSel((s) => ({ ...s, strength: o }))} />)}
+      {base.mods.includes("sugar") && (
+        <ModRow label="Sweetness" options={SUGAR} value={sel.sugar}
+          onPick={(o) => onSel((s) => ({ ...s, sugar: o }))} />)}
+      {base.mods.includes("tarik") && (
+        <ModRow label="Pulled" options={[{ id: "no", label: "No" }, { id: "yes", label: "Tarik" }]}
+          value={{ id: sel.tarik ? "yes" : "no" }}
+          onPick={(o) => onSel((s) => ({ ...s, tarik: o.id === "yes" }))} />)}
+      {base.mods.includes("temp") && (
+        <ModRow label="Temperature" options={TEMP} value={sel.temp}
+          onPick={(o) => onSel((s) => ({ ...s, temp: o }))} />)}
+      {base.mods.includes("custom") && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
+            What would you like?
+          </div>
+          <input className="kr-input" placeholder="Type your drink — e.g. Iced lemon tea"
+            value={sel.custom} onChange={(e) => onSel((s) => ({ ...s, custom: e.target.value }))} />
+        </div>)}
+    </>
   );
 }
 

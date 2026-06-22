@@ -2,7 +2,8 @@
 
 Order kopi together. Create a run, share the link, everyone picks their drink from the
 Singapore kopitiam menu, and the consolidated order updates live for the whole group.
-The organizer can close the order to lock it in.
+People can edit or delete their own drinks after adding them, and the organizer can
+close the order to lock it in.
 
 **Stack:** React + Vite (frontend) · Supabase (Postgres + Realtime) · Netlify (hosting).
 
@@ -38,8 +39,11 @@ git push -u origin main
 1. Open your project at https://app.supabase.com
 2. Left sidebar → **SQL Editor** → **New query**
 3. Open `supabase/schema.sql` from this project, copy everything, paste it in, click **Run**.
-   You should see "Success." This creates the `orders` and `items` tables, security rules,
-   the live-update (Realtime) feeds, and the organizer "close order" function.
+   You should see "Success." This creates the `orders` and `items` tables, security rules
+   (including the add / edit / delete permissions for drinks), the live-update (Realtime)
+   feeds, and the organizer "close order" function. The script is safe to re-run — if you
+   set up the database before the edit/delete feature existed, just run it again to apply
+   the new permissions.
 4. Left sidebar → **Project Settings** → **API**. Copy these two values:
    - **Project URL** (looks like `https://abcd1234.supabase.co`)
    - **anon public** key (a long string under "Project API keys")
@@ -68,7 +72,11 @@ When it finishes you'll get a URL like `https://kopi-run-xyz.netlify.app`.
 2. Tap **Copy link** and send it to your friends (it looks like `…/order/ABCDE`).
 3. Everyone opens the link, builds a drink, adds their name, taps **Add to the order**.
 4. The consolidated list updates live for everyone.
-5. When done, the organizer taps **Close order** to lock it.
+5. Made a mistake? Under **Who ordered what**, tap **Edit** to reopen the drink builder
+   (pre-filled with your choices) or **Delete** to remove it. You can manage the drinks you
+   added on this device; the organizer can manage any. These controls disappear once the
+   order is closed.
+6. When done, the organizer taps **Close order** to lock it.
 
 ---
 
@@ -84,7 +92,10 @@ npm run dev               # opens http://localhost:5173
 
 ## Good-to-know limits of this MVP
 - **No login.** Anyone with a code/link can view and add to that order — perfect for friends,
-  not meant as a locked-down public product.
+  not meant as a locked-down public product. Edit/delete are open at the database level for
+  the same reason; the app limits the buttons to the drinks each device added (tracked in
+  your browser), plus the organizer, but this is a friendly convenience rather than hard
+  security.
 - **Organizer = whoever created the run on that device.** A private token is stored in your
   browser so the **Close order** button survives refreshes. Clearing site data or using a
   different device means you'd no longer be recognised as organizer for that run.
@@ -104,7 +115,7 @@ kopi-run/
 ├─ src/
 │  ├─ main.jsx           # app entry + router
 │  ├─ App.jsx            # all screens, Supabase calls, realtime, UI
-│  ├─ menu.js            # kopitiam menu + Singlish name builder
+│  ├─ menu.js            # kopitiam menu + Singlish name builder / parser
 │  └─ supabaseClient.js  # reads your env vars
 └─ supabase/
    └─ schema.sql         # paste into Supabase SQL editor

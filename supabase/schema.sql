@@ -71,8 +71,23 @@ grant execute on function public.close_order(text, text) to anon, authenticated;
 
 -- ---------------- Realtime ----------------
 -- Lets the app receive live INSERT/UPDATE events over websockets.
-alter publication supabase_realtime add table public.items;
-alter publication supabase_realtime add table public.orders;
+-- Guarded so re-running the schema doesn't error if the tables are already
+-- members of the publication ("already member of publication" / 42710).
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'items'
+  ) then
+    alter publication supabase_realtime add table public.items;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'orders'
+  ) then
+    alter publication supabase_realtime add table public.orders;
+  end if;
+end $$;
 
 -- ---------------- Data API grants ----------------
 -- Future-proofing: from late 2026 Supabase requires explicit grants for

@@ -210,6 +210,10 @@ function OrderPage() {
   const [baseId, setBaseId] = useState("kopi");
   const [sel, setSel] = useState(defaultSel());
   const [notes, setNotes] = useState("");
+  // Ordering on someone else's behalf: when forOther is on, the drink is
+  // added under otherName instead of myName.
+  const [forOther, setForOther] = useState(false);
+  const [otherName, setOtherName] = useState("");
 
   // Per-device history: list of { drink, notes, baseId, sel }
   const [history, setHistory] = useState(getHistory());
@@ -271,24 +275,41 @@ function OrderPage() {
     flash("Loaded — tap Add to confirm");
   }
 
+  // Load another person's drink from the live list into the builder.
+  function pickFromItem(it) {
+    const { baseId: pickedBase, sel: pickedSel } = parseName(it.drink);
+    setBaseId(pickedBase);
+    setSel(pickedSel);
+    setNotes(it.notes || "");
+    flash(`Loaded ${it.person}'s drink — tap Add to confirm`);
+  }
+
   async function handleAdd() {
-    if (!myName.trim()) return flash("Enter your name first");
+    if (forOther && !otherName.trim()) return flash("Enter their name first");
+    if (!forOther && !myName.trim()) return flash("Enter your name first");
     if (!order || order.closed) return;
     if (base.mods.includes("custom") && !sel.custom.trim()) return flash("Type your drink first");
     const drink = buildName(base, sel);
-    const person = myName.trim();
+    const person = forOther ? otherName.trim() : myName.trim();
     const cleanNotes = notes.trim();
     const { data, error } = await supabase
       .from("items").insert({ order_id: order.id, person, drink, notes: cleanNotes })
       .select("id").single();
     if (error) { flash("Couldn't add — try again"); console.error(error); return; }
-    // Remember this drink as "mine" so it shows edit/delete controls.
+    // Remember this drink as "mine" so it shows edit/delete controls — even
+    // for drinks placed on someone else's behalf, since the recipient may
+    // never open the app themselves.
     if (data?.id) setMine(addMine(code, data.id));
-    saveName(person);
-    // Save this drink to the device's private history and refresh the quick-picks.
-    setHistory(pushHistory({ drink, notes: cleanNotes, baseId, sel }));
+    if (!forOther) {
+      saveName(person);
+      // Only self-orders go into this device's private history, so someone
+      // else's drink doesn't pollute the quick-picks.
+      setHistory(pushHistory({ drink, notes: cleanNotes, baseId, sel }));
+    }
     setNotes("");
-    flash(`${drink} added`);
+    setOtherName("");
+    setForOther(false);
+    flash(`${drink} added${forOther ? ` for ${person}` : ""}`);
     fetchItems(order.id);
   }
 
@@ -404,6 +425,21 @@ function OrderPage() {
               value={myName} onChange={(e) => setMyName(e.target.value)} />
           </div>
 
+          {/* Order for yourself or on someone else's behalf */}
+          <ModRow label="Who's this drink for?"
+            options={[{ id: "me", label: "Me" }, { id: "other", label: "Someone else" }]}
+            value={{ id: forOther ? "other" : "me" }}
+            onPick={(o) => setForOther(o.id === "other")} />
+          {forOther && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, marginBottom: 8 }}>
+                Their name
+              </div>
+              <input className="kr-input" placeholder="e.g. Wei Ling"
+                value={otherName} onChange={(e) => setOtherName(e.target.value)} />
+            </div>
+          )}
+
           {/* Your usual — this device's recent drinks */}
           {history.length > 0 && (
             <div style={{ marginBottom: 16 }}>
@@ -424,7 +460,9 @@ function OrderPage() {
             onBase={(id) => { setBaseId(id); setSel(defaultSel()); }} onSel={setSel} />
 
           <div style={previewStyle}>
-            <span style={{ font: "500 11px/1 'DM Sans'", color: C.coffeeMid, letterSpacing: ".1em" }}>YOUR ORDER</span>
+            <span style={{ font: "500 11px/1 'DM Sans'", color: C.coffeeMid, letterSpacing: ".1em" }}>
+              YOUR ORDER{forOther && otherName.trim() ? ` — FOR ${otherName.trim().toUpperCase()}` : ""}
+            </span>
             <span style={{ font: "700 italic 20px/1.1 'Fraunces'", color: C.coffee }}>{buildName(base, sel)}</span>
           </div>
 
@@ -495,6 +533,12 @@ function OrderPage() {
                     <span style={{ font: "500 13px/1.3 'DM Sans'", color: C.ink, textAlign: "right" }}>
                       {it.drink}{it.notes ? <em style={{ color: C.coffeeMid }}> · {it.notes}</em> : null}
                     </span>
+                    {!order.closed && (
+                      <button className="kr-mini" style={{ borderColor: C.green, color: C.green }}
+                        onClick={() => pickFromItem(it)} aria-label={`Order the same as ${it.person}`}>
+                        Same
+                      </button>
+                    )}
                     {canManage(it) && (
                       confirmId === it.id ? (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>

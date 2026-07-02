@@ -229,6 +229,10 @@ function OrderPage() {
   const [editPerson, setEditPerson] = useState("");
   // Id of the item awaiting a delete confirmation.
   const [confirmId, setConfirmId] = useState(null);
+  // Item chosen via "Same" in the order-so-far list — drives the SameModal.
+  const [sameItem, setSameItem] = useState(null);
+  // Pending name-required prompt: { title, onConfirm(name) } or null.
+  const [nameModal, setNameModal] = useState(null);
 
   const base = BASES.find((b) => b.id === baseId);
   const isOrganizer = !!getOrgToken(code);
@@ -275,42 +279,74 @@ function OrderPage() {
     flash("Loaded — tap Add to confirm");
   }
 
-  // Load another person's drink from the live list into the builder.
-  function pickFromItem(it) {
-    const { baseId: pickedBase, sel: pickedSel } = parseName(it.drink);
-    setBaseId(pickedBase);
-    setSel(pickedSel);
-    setNotes(it.notes || "");
-    flash(`Loaded ${it.person}'s drink — tap Add to confirm`);
-  }
-
-  async function handleAdd() {
-    if (forOther && !otherName.trim()) return flash("Enter their name first");
-    if (!forOther && !myName.trim()) return flash("Enter your name first");
-    if (!order || order.closed) return;
-    if (base.mods.includes("custom") && !sel.custom.trim()) return flash("Type your drink first");
-    const drink = buildName(base, sel);
-    const person = forOther ? otherName.trim() : myName.trim();
-    const cleanNotes = notes.trim();
+  // Shared insert logic used by the main builder, the "Same as" modal, and
+  // the name-required modal once a name has been supplied.
+  async function addItem({ baseId: bId, sel: s, notes: n, person, forOther: fo }) {
+    if (!order || order.closed) return false;
+    const b = BASES.find((x) => x.id === bId);
+    if (b.mods.includes("custom") && !s.custom.trim()) { flash("Type your drink first"); return false; }
+    const drink = buildName(b, s);
+    const cleanNotes = n.trim();
     const { data, error } = await supabase
       .from("items").insert({ order_id: order.id, person, drink, notes: cleanNotes })
       .select("id").single();
-    if (error) { flash("Couldn't add — try again"); console.error(error); return; }
+    if (error) { flash("Couldn't add — try again"); console.error(error); return false; }
     // Remember this drink as "mine" so it shows edit/delete controls — even
     // for drinks placed on someone else's behalf, since the recipient may
     // never open the app themselves.
     if (data?.id) setMine(addMine(code, data.id));
-    if (!forOther) {
+    if (!fo) {
       saveName(person);
       // Only self-orders go into this device's private history, so someone
       // else's drink doesn't pollute the quick-picks.
-      setHistory(pushHistory({ drink, notes: cleanNotes, baseId, sel }));
+      setHistory(pushHistory({ drink, notes: cleanNotes, baseId: bId, sel: s }));
     }
-    setNotes("");
-    setOtherName("");
-    setForOther(false);
-    flash(`${drink} added${forOther ? ` for ${person}` : ""}`);
+    flash(`${drink} added${fo ? ` for ${person}` : ""}`);
     fetchItems(order.id);
+    return true;
+  }
+
+  async function handleAdd() {
+    if (!order || order.closed) return;
+    if (base.mods.includes("custom") && !sel.custom.trim()) return flash("Type your drink first");
+    if (forOther && !otherName.trim()) {
+      // They're ordering for someone else but forgot the name — ask for it
+      // in a modal instead of just toasting, so they don't lose the drink
+      // they just built.
+      setNameModal({
+        title: "Who's this drink for?",
+        onConfirm: async (name) => {
+          setNameModal(null);
+          const ok = await addItem({ baseId, sel, notes, person: name, forOther: true });
+          if (ok) { setNotes(""); setOtherName(""); setForOther(false); }
+        },
+      });
+      return;
+    }
+    if (!forOther && !myName.trim()) return flash("Enter your name first");
+    const person = forOther ? otherName.trim() : myName.trim();
+    const ok = await addItem({ baseId, sel, notes, person, forOther });
+    if (ok) { setNotes(""); setOtherName(""); setForOther(false); }
+  }
+
+  // "Same" in the order-so-far list opens a focused modal to add that drink
+  // right away, instead of loading it into the builder up top.
+  async function handleSameAdd({ baseId: bId, sel: s, notes: n, forOther: fo, name, otherName: on }) {
+    if (fo && !on.trim()) {
+      setNameModal({
+        title: "Who's this drink for?",
+        onConfirm: async (nm) => {
+          setNameModal(null);
+          const ok = await addItem({ baseId: bId, sel: s, notes: n, person: nm, forOther: true });
+          if (ok) setSameItem(null);
+        },
+      });
+      return;
+    }
+    if (!fo && !name.trim()) return flash("Enter your name first");
+    const person = fo ? on.trim() : name.trim();
+    const ok = await addItem({ baseId: bId, sel: s, notes: n, person, forOther: fo });
+    if (ok) setSameItem(null);
   }
 
   function startEdit(it) {
@@ -535,7 +571,7 @@ function OrderPage() {
                     </span>
                     {!order.closed && (
                       <button className="kr-mini" style={{ borderColor: C.green, color: C.green }}
-                        onClick={() => pickFromItem(it)} aria-label={`Order the same as ${it.person}`}>
+                        onClick={() => setSameItem(it)} aria-label={`Order the same as ${it.person}`}>
                         Same
                       </button>
                     )}
@@ -568,6 +604,23 @@ function OrderPage() {
           onCopyLink={() => copy(shareLink, "Link copied")}
           onCopyCode={() => copy(order.code, "Code copied")}
           onClose={() => setShowShare(false)}
+        />
+      )}
+
+      {sameItem && (
+        <SameModal
+          sourceItem={sameItem}
+          defaultName={myName}
+          onAdd={handleSameAdd}
+          onClose={() => setSameItem(null)}
+        />
+      )}
+
+      {nameModal && (
+        <NameModal
+          title={nameModal.title}
+          onConfirm={nameModal.onConfirm}
+          onClose={() => setNameModal(null)}
         />
       )}
 
@@ -609,6 +662,81 @@ function ShareModal({ orderName, shareLink, code, onCopyLink, onCopyCode, onClos
 
         <button className="kr-close" style={{ borderColor: C.line, color: C.coffeeMid, marginTop: 18 }} onClick={onClose}>
           Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ Same-as modal ============================ */
+// Lets someone add another item's drink straight from the "order so far"
+// list, without touching (or losing) whatever's in the builder up top.
+function SameModal({ sourceItem, defaultName, onAdd, onClose }) {
+  const { baseId, sel } = parseName(sourceItem.drink);
+  const base = BASES.find((b) => b.id === baseId);
+  const [forOther, setForOther] = useState(false);
+  const [name, setName] = useState(defaultName || "");
+  const [otherName, setOtherName] = useState("");
+  const [notes, setNotes] = useState(sourceItem.notes || "");
+
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={{ font: "800 20px/1.2 'Fraunces'", color: C.ink }}>Same as {sourceItem.person}</div>
+
+        <div style={{ ...previewStyle, marginTop: 12 }}>
+          <span style={{ font: "500 11px/1 'DM Sans'", color: C.coffeeMid, letterSpacing: ".1em" }}>DRINK</span>
+          <span style={{ font: "700 italic 20px/1.1 'Fraunces'", color: C.coffee }}>{buildName(base, sel)}</span>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <ModRow label="Who's this drink for?"
+            options={[{ id: "me", label: "Me" }, { id: "other", label: "Someone else" }]}
+            value={{ id: forOther ? "other" : "me" }}
+            onPick={(o) => setForOther(o.id === "other")} />
+        </div>
+
+        {forOther ? (
+          <input className="kr-input" placeholder="Their name" autoFocus
+            value={otherName} onChange={(e) => setOtherName(e.target.value)} style={{ marginBottom: 14 }} />
+        ) : (
+          <input className="kr-input" placeholder="Your name"
+            value={name} onChange={(e) => setName(e.target.value)} style={{ marginBottom: 14 }} />
+        )}
+
+        <input className="kr-input" placeholder="Notes (optional) — e.g. less ice"
+          value={notes} onChange={(e) => setNotes(e.target.value)} />
+
+        <button className="kr-add" onClick={() => onAdd({ baseId, sel, notes, forOther, name, otherName })}>
+          Add to the order
+        </button>
+        <button className="kr-close" style={{ borderColor: C.line, color: C.coffeeMid, marginTop: 10 }} onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ Name-required modal ============================ */
+// Shown when someone tries to add a drink "for someone else" without
+// entering that person's name, so they can supply it without losing
+// the drink they already built.
+function NameModal({ title = "Enter a name", onConfirm, onClose }) {
+  const [name, setName] = useState("");
+  const submit = () => { if (name.trim()) onConfirm(name.trim()); };
+
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+        <div style={{ font: "800 20px/1.2 'Fraunces'", color: C.ink }}>{title}</div>
+        <p style={{ ...subText, marginTop: 8 }}>Enter a name so everyone knows whose drink this is.</p>
+        <input className="kr-input" placeholder="e.g. Wei Ling" autoFocus
+          value={name} onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+        <button className="kr-add" onClick={submit} disabled={!name.trim()}>Continue</button>
+        <button className="kr-close" style={{ borderColor: C.line, color: C.coffeeMid, marginTop: 10 }} onClick={onClose}>
+          Cancel
         </button>
       </div>
     </div>

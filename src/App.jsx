@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Routes, Route, useNavigate, useParams, useLocation, Link } from "react-router-dom";
 import { supabase } from "./supabaseClient.js";
+import QRCode from "qrcode";
 import { BASES, MILK, SUGAR, STRENGTH, TEMP, defaultSel, buildName, parseName, genCode } from "./menu.js";
 
 /* ============================ Kopitiam palette ============================ */
@@ -139,9 +140,9 @@ function Home() {
     }
   }
 
-  async function handleJoin() {
+  async function joinWithCode(codeInput) {
     setErr("");
-    const code = joinCode.trim().toUpperCase();
+    const code = codeInput.trim().toUpperCase();
     if (code.length < 4) return setErr("Enter the full order code.");
     setBusy(true);
     try {
@@ -156,6 +157,17 @@ function Home() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function handleJoin() { return joinWithCode(joinCode); }
+
+  const [scanning, setScanning] = useState(false);
+  const canScan = typeof window !== "undefined" && "BarcodeDetector" in window;
+
+  function handleScanned(text) {
+    setScanning(false);
+    const match = text.match(/\/order\/([A-Za-z0-9]+)/);
+    joinWithCode(match ? match[1] : text);
   }
 
   return (
@@ -176,12 +188,21 @@ function Home() {
         <input className="kr-input" placeholder="Order code"
           value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
           style={{ letterSpacing: ".24em", fontWeight: 700, textTransform: "uppercase" }} />
-        <button className="kr-add" style={{ background: C.green }} onClick={handleJoin} disabled={busy}>
-          {busy ? "Joining…" : "Join order"}
-        </button>
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <button className="kr-add" style={{ background: C.green, flex: 1 }} onClick={handleJoin} disabled={busy}>
+            {busy ? "Joining…" : "Join order"}
+          </button>
+          {canScan && (
+            <button className="kr-ghost" onClick={() => setScanning(true)} disabled={busy}>
+              Scan QR
+            </button>
+          )}
+        </div>
       </div>
 
       {err && <div style={errStyle}>{err}</div>}
+
+      {scanning && <QrScanner onClose={() => setScanning(false)} onDecode={handleScanned} />}
     </>
   );
 }
@@ -602,6 +623,7 @@ function OrderPage() {
         <ShareModal
           orderName={order.name}
           code={order.code}
+          shareLink={shareLink}
           onCopyLink={() => copy(shareLink, "Link copied")}
           onCopyCode={() => copy(order.code, "Code copied")}
           onClose={() => setShowShare(false)}
@@ -627,6 +649,72 @@ function OrderPage() {
 
       {toast && <div style={toastStyle}>{toast}</div>}
     </>
+  );
+}
+
+/* ============================ QR scanner ============================ */
+// Only rendered when `BarcodeDetector` exists (Chrome/Android WebView —
+// the TWA's runtime). No cross-browser polyfill; the manual code input
+// next to it stays as the fallback on unsupported browsers.
+function QrScanner({ onDecode, onClose }) {
+  const videoRef = useRef(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let stream = null;
+    let rafId = null;
+    let stopped = false;
+    const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+
+    async function scan() {
+      if (stopped) return;
+      try {
+        const codes = await detector.detect(videoRef.current);
+        if (codes.length > 0) {
+          onDecode(codes[0].rawValue);
+          return;
+        }
+      } catch {
+        // frame not decodable yet — keep scanning
+      }
+      rafId = requestAnimationFrame(scan);
+    }
+
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (stopped) { stream.getTracks().forEach((t) => t.stop()); return; }
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        scan();
+      } catch {
+        setError("Couldn't access the camera. Check camera permission for the app.");
+      }
+    })();
+
+    return () => {
+      stopped = true;
+      if (rafId) cancelAnimationFrame(rafId);
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+    };
+  }, [onDecode]);
+
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={{ ...modalStyle, padding: 0, overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
+        {error ? (
+          <div style={{ padding: 20 }}>
+            <p style={subText}>{error}</p>
+            <button className="kr-close" onClick={onClose}>Close</button>
+          </div>
+        ) : (
+          <>
+            <video ref={videoRef} playsInline muted style={{ width: "100%", display: "block" }} />
+            <button className="kr-close" style={{ margin: 12 }} onClick={onClose}>Cancel</button>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -657,7 +745,17 @@ function SmartAppBanner({ code }) {
 }
 
 /* ============================ Share modal ============================ */
-function ShareModal({ orderName, code, onCopyLink, onCopyCode, onClose }) {
+function ShareModal({ orderName, code, shareLink, onCopyLink, onCopyCode, onClose }) {
+  const [qrDataUrl, setQrDataUrl] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    QRCode.toDataURL(shareLink, { width: 200, margin: 1, color: { dark: "#4A2A18", light: "#FBF5E7" } })
+      .then((url) => { if (!cancelled) setQrDataUrl(url); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [shareLink]);
+
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
@@ -666,6 +764,13 @@ function ShareModal({ orderName, code, onCopyLink, onCopyCode, onClose }) {
           This is the unique link for <strong>{orderName}</strong>. Anyone who opens it lands on the
           same live order. Send it to everyone joining the dabao.
         </p>
+
+        {qrDataUrl && (
+          <div style={{ display: "flex", justifyContent: "center", margin: "14px 0" }}>
+            <img src={qrDataUrl} alt="Scan to join" width={160} height={160}
+              style={{ borderRadius: 12, border: `1px solid ${C.line}` }} />
+          </div>
+        )}
 
         <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, margin: "4px 0 8px" }}>
           Share link

@@ -417,6 +417,8 @@ function OrderPage() {
 
   return (
     <>
+      <SmartAppBanner code={code} />
+
       {/* header */}
       <div style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
@@ -599,7 +601,6 @@ function OrderPage() {
       {showShare && (
         <ShareModal
           orderName={order.name}
-          shareLink={shareLink}
           code={order.code}
           onCopyLink={() => copy(shareLink, "Link copied")}
           onCopyCode={() => copy(order.code, "Code copied")}
@@ -629,8 +630,34 @@ function OrderPage() {
   );
 }
 
+/* ============================ Smart app banner ============================ */
+// Only relevant on Android: when a shared link lands in a real browser tab
+// (App Links verification failed, or the app isn't installed yet), offer a
+// one-tap path into the installed app, or the Play Store with the order
+// code carried through as an install referrer.
+function SmartAppBanner({ code }) {
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const isStandalone = window.matchMedia("(display-mode: standalone)").matches;
+  if (!isAndroid || isStandalone) return null;
+
+  const pkg = "run.kprun.twa";
+  const fallback = encodeURIComponent(
+    `https://play.google.com/store/apps/details?id=${pkg}&referrer=${encodeURIComponent(`order=${code}`)}`
+  );
+  const intentUrl =
+    `intent://${window.location.host}/order/${code}#Intent;scheme=https;package=${pkg};` +
+    `S.browser_fallback_url=${fallback};end`;
+
+  return (
+    <div style={{ ...cardStyle, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+      <span style={{ font: "600 13px/1.3 'DM Sans'", color: C.coffee }}>Open this in the Kopi Run app</span>
+      <a href={intentUrl} className="kr-solid" style={{ background: C.green, textDecoration: "none" }}>Open app</a>
+    </div>
+  );
+}
+
 /* ============================ Share modal ============================ */
-function ShareModal({ orderName, shareLink, code, onCopyLink, onCopyCode, onClose }) {
+function ShareModal({ orderName, code, onCopyLink, onCopyCode, onClose }) {
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
@@ -643,9 +670,9 @@ function ShareModal({ orderName, shareLink, code, onCopyLink, onCopyCode, onClos
         <div style={{ font: "600 11px/1 'DM Sans'", letterSpacing: ".14em", textTransform: "uppercase", color: C.coffeeMid, margin: "4px 0 8px" }}>
           Share link
         </div>
-        <input className="kr-input" readOnly value={shareLink}
-          onFocus={(e) => e.target.select()}
-          style={{ fontSize: 13, color: C.coffee }} />
+        <div className="kr-input" style={{ fontSize: 13, color: C.coffeeMid, display: "flex", alignItems: "center" }}>
+          Kopi Run · order {code}
+        </div>
         <button className="kr-add" style={{ background: C.green, marginTop: 12 }} onClick={onCopyLink}>
           Copy link
         </button>

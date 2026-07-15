@@ -2,6 +2,10 @@
 
 Status: backend and client plumbing built, dormant. Not activated.
 
+## Not applied yet — do this now, not just at activation
+
+`supabase/schema.sql` was updated (config/entitlements tables, trigger, is_entitled(), RLS) and pushed to git, but a git push does **not** touch the live Supabase project. Run it manually: Supabase dashboard > SQL Editor > paste full `supabase/schema.sql` > Run. Safe to run anytime — paywall stays off (`paywall_enabled = false`) until step 5 below.
+
 ## Decisions
 
 - Pricing: one-time purchase (not subscription).

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Routes, Route, useNavigate, useParams, useLocation, Link } from "react-router-dom";
 import { supabase } from "./supabaseClient.js";
+import { ensureSession, restorePurchases } from "./entitlement.js";
 import QRCode from "qrcode";
 import { BASES, MILK, SUGAR, STRENGTH, TEMP, defaultSel, buildName, parseName, genCode } from "./menu.js";
 
@@ -93,6 +94,14 @@ const pushHistory = (entry) => {
 
 /* ============================ App / Router ============================ */
 export default function App() {
+  // Dormant paywall bootstrap: gives every visitor a Supabase session (so a
+  // trial clock exists once the paywall is turned on) and silently re-links
+  // any existing Play purchase after a reinstall. No UI effect while
+  // public.config.paywall_enabled stays false — see src/entitlement.js.
+  useEffect(() => {
+    ensureSession().then(() => restorePurchases()).catch(() => {});
+  }, []);
+
   return (
     <div style={pageStyle}>
       <style>{css}</style>

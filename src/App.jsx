@@ -114,6 +114,7 @@ export default function App() {
         </Routes>
         <footer style={{ textAlign: "center", marginTop: 22, font: "500 11px/1.5 'DM Sans'", color: C.coffeeMid }}>
           Share the order link with your kaki — everyone sees the same live order.
+          <div style={{ marginTop: 6 }}>Developer: CatStackDev</div>
         </footer>
       </div>
     </div>
